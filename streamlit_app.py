@@ -57,7 +57,7 @@ with col2:
     equipo_visitante = st.selectbox("Equipo Visitante", equipos, index=1)
 
 # Botón de predicción
-if st.button("🔮 Predecir Resultado", type="primary", use_container_width=True):
+if st.button("Predecir Resultado", type="primary", use_container_width=True):
     # Crear fila de datos para la predicción
     # Usamos valores neutros por defecto (como si fuera inicio de temporada)
     default_values = {
