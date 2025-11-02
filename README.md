@@ -9,15 +9,12 @@ Aplicación Streamlit para predecir resultados de partidos de la Liga Argentina 
 pip install -r requirements.txt
 ```
 
-2. Entrenar el modelo:
-```bash
-python -m app.train_model
-```
-
-3. Ejecutar la app:
+2. Ejecutar la app:
 ```bash
 streamlit run streamlit_app.py
 ```
+
+**Nota:** El modelo ya está entrenado (`model.pkl`). Se entrena en Google Colab y se incluye en el repositorio.
 
 ## Uso
 
@@ -31,14 +28,14 @@ streamlit run streamlit_app.py
 ```
 app-prediccion-liga-argentina/
 ├── streamlit_app.py        # Aplicación Streamlit
+├── model.pkl               # Modelo entrenado (de Colab)
 ├── app/
-│   ├── train_model.py      # Script de entrenamiento
 │   ├── preprocessing.py    # Transformadores de preprocesamiento
-│   └── models/             # Modelos guardados
+│   └── models/             # Datos auxiliares (equipos, valores)
 ├── .streamlit/
 │   └── config.toml         # Configuración de Streamlit
 ├── requirements.txt        # Dependencias
-├── liga_argentina_features_v2 (1).csv  # Dataset
+├── liga_argentina_features_v3.csv      # Dataset
 └── README.md
 ```
 

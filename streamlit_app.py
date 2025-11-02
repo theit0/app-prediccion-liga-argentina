@@ -6,7 +6,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import sys
 from pathlib import Path
+from app.preprocessing import DropColumns
+
+# Necesario para deserializar el modelo pickle guardado desde Colab
+sys.modules['__main__'].DropColumns = DropColumns
 
 # Configuración de página
 st.set_page_config(
@@ -21,10 +26,10 @@ st.set_page_config(
 def load_model():
     """Cargar el modelo entrenado"""
     try:
-        model = joblib.load("app/models/model.pkl")
+        model = joblib.load("model.pkl")
         return model
     except FileNotFoundError:
-        st.error("No se encontró el archivo del modelo. Ejecuta train_model.py primero.")
+        st.error("No se encontró el archivo del modelo (model.pkl).")
         st.stop()
 
 @st.cache_data
@@ -35,7 +40,7 @@ def load_auxiliary_data():
         values = joblib.load("app/models/team_values_2025.pkl")
         return equipos, values
     except FileNotFoundError:
-        st.error("No se encontraron los archivos auxiliares. Ejecuta train_model.py primero.")
+        st.error("No se encontraron los archivos auxiliares en app/models/.")
         st.stop()
 
 
@@ -61,12 +66,17 @@ if st.button("Predecir Resultado", type="primary", use_container_width=True):
     # Crear fila de datos para la predicción
     # Usamos valores neutros por defecto (como si fuera inicio de temporada)
     default_values = {
-        'fecha_del_partido': pd.Timestamp('2025-01-15'),  # Fecha dummy, será eliminada
-        'partido_anio': 2025,
-        'partido_mes': 1,
-        'partido_dia_semana': 0,
+        'fecha_del_partido': pd.Timestamp('2025-01-15'),  # Fecha dummy
+        'season': 2025,
+        'sub_season': 1,
+        'fixture_id': 0,  # Dummy ID
+        'round': 'Regular Season - 1',
+        'Equipo_local_id': 0,  # Dummy ID, se eliminará
         'Equipo_local': equipo_local,
+        'Equipo_visitante_id': 0,  # Dummy ID, se eliminará  
         'Equipo_visitante': equipo_visitante,
+        'Partidos_jugados_local_previos': 0,
+        'Partidos_jugados_visitante_previos': 0,
         'Forma_local_ultimos5': '',
         'Forma_visitante_ultimos5': '',
         'Forma_local_puntos_ultimos5': 7,  # Valor promedio
@@ -94,14 +104,29 @@ if st.button("Predecir Resultado", type="primary", use_container_width=True):
         'Promedio_Puntuacion_total_visitante_normalizado': 0.5,
     }
     
-    # Agregar valores de mercado
-    default_values['local_team_value'] = team_values.get(equipo_local, 20.0)
-    default_values['visitante_team_value'] = team_values.get(equipo_visitante, 20.0)
+    # Calcular valores de mercado normalizados para 2025
+    # Esto es consistente con cómo se normalizaron en el CSV v3 (normalización por año)
+    all_values_2025 = list(team_values.values())
+    min_val = min(all_values_2025)
+    max_val = max(all_values_2025)
+    
+    local_value = team_values.get(equipo_local, 20.0)
+    visitante_value = team_values.get(equipo_visitante, 20.0)
+    
+    # Normalizar valores igual que en el análisis (min-max normalization por año)
+    default_values['local_team_value_normalized'] = (local_value - min_val) / (max_val - min_val)
+    default_values['visitante_team_value_normalized'] = (visitante_value - min_val) / (max_val - min_val)
     
     # Crear DataFrame
     df_pred = pd.DataFrame([default_values])
     
-    # No necesitamos fecha_del_partido, el pipeline la elimina
+    # Procesar fecha y crear features temporales (igual que en train_model.py)
+    df_pred['fecha_del_partido'] = pd.to_datetime(df_pred['fecha_del_partido'], errors='coerce', utc=True)
+    df_pred['partido_anio'] = df_pred['fecha_del_partido'].dt.year
+    df_pred['partido_mes'] = df_pred['fecha_del_partido'].dt.month
+    df_pred['partido_dia_semana'] = df_pred['fecha_del_partido'].dt.dayofweek
+    
+    # Eliminar fecha_del_partido (el pipeline espera que ya no esté)
     df_pred = df_pred.drop(columns=['fecha_del_partido'])
     
     # Hacer predicción
