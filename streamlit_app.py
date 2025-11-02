@@ -76,7 +76,7 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.write("Equipo Local")
-    col_img1, col_select1 = st.columns([1, 4])
+    col_img1, col_select1 = st.columns([0.8, 4.2], gap="small")
     img_placeholder1 = col_img1.empty()
     with col_select1:
         equipo_local = st.selectbox("", equipos, index=0, key="select_local", label_visibility="collapsed")
@@ -85,7 +85,7 @@ with col1:
 
 with col2:
     st.write("Equipo Visitante")
-    col_img2, col_select2 = st.columns([1, 4])
+    col_img2, col_select2 = st.columns([0.8, 4.2], gap="small")
     img_placeholder2 = col_img2.empty()
     with col_select2:
         equipo_visitante = st.selectbox("", equipos, index=1, key="select_visitante", label_visibility="collapsed")
