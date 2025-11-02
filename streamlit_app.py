@@ -10,9 +10,6 @@ import sys
 from pathlib import Path
 from app.preprocessing import DropColumns
 
-# Necesario para deserializar el modelo pickle guardado desde Colab
-sys.modules['__main__'].DropColumns = DropColumns
-
 # Configuración de página
 st.set_page_config(
     page_title="Predicción Liga Argentina",
@@ -102,32 +99,12 @@ if st.button("Predecir Resultado", type="primary", use_container_width=True):
         'Promedio_Diferencia_gol_total_visitante_normalizado': 0.0,
         'Promedio_Puntuacion_total_local_normalizado': 0.5,
         'Promedio_Puntuacion_total_visitante_normalizado': 0.5,
+        'local_team_value_normalized': 0.5,
+        'visitante_team_value_normalized': 0.5,
     }
-    
-    # Calcular valores de mercado normalizados para 2025
-    # Esto es consistente con cómo se normalizaron en el CSV v3 (normalización por año)
-    all_values_2025 = list(team_values.values())
-    min_val = min(all_values_2025)
-    max_val = max(all_values_2025)
-    
-    local_value = team_values.get(equipo_local, 20.0)
-    visitante_value = team_values.get(equipo_visitante, 20.0)
-    
-    # Normalizar valores igual que en el análisis (min-max normalization por año)
-    default_values['local_team_value_normalized'] = (local_value - min_val) / (max_val - min_val)
-    default_values['visitante_team_value_normalized'] = (visitante_value - min_val) / (max_val - min_val)
     
     # Crear DataFrame
     df_pred = pd.DataFrame([default_values])
-    
-    # Procesar fecha y crear features temporales (igual que en train_model.py)
-    df_pred['fecha_del_partido'] = pd.to_datetime(df_pred['fecha_del_partido'], errors='coerce', utc=True)
-    df_pred['partido_anio'] = df_pred['fecha_del_partido'].dt.year
-    df_pred['partido_mes'] = df_pred['fecha_del_partido'].dt.month
-    df_pred['partido_dia_semana'] = df_pred['fecha_del_partido'].dt.dayofweek
-    
-    # Eliminar fecha_del_partido (el pipeline espera que ya no esté)
-    df_pred = df_pred.drop(columns=['fecha_del_partido'])
     
     # Hacer predicción
     try:
