@@ -55,23 +55,67 @@ def load_auxiliary_data():
         st.error("No se encontraron los archivos auxiliares.")
         st.stop()
 
+@st.cache_data
+def load_team_urls():
+    """Cargar mapeo de equipos a URLs de iconos desde el CSV"""
+    try:
+        df = pd.read_csv("liga_argentina_features_v3.csv", sep=';')
+        # Crear diccionario único de equipo -> URL
+        team_urls = {}
+        # Mapear desde Equipo_local
+        for equipo, url in zip(df['Equipo_local'], df['local_team_url']):
+            if pd.notna(equipo) and pd.notna(url) and url:
+                team_urls[equipo] = url
+        # Mapear desde Equipo_visitante (para cubrir cualquier caso)
+        for equipo, url in zip(df['Equipo_visitante'], df['visitante_team_url']):
+            if pd.notna(equipo) and pd.notna(url) and url:
+                if equipo not in team_urls:  # Solo agregar si no existe
+                    team_urls[equipo] = url
+        return team_urls
+    except Exception as e:
+        st.warning(f"No se pudieron cargar las URLs de los equipos: {e}")
+        return {}
+
 
 # Cargar datos
 model = load_model()
 equipos = load_auxiliary_data()
+team_urls = load_team_urls()
 
 # Interfaz
 st.title("⚽ Predicción de Resultados - Liga Argentina")
 st.markdown("Selecciona dos equipos para predecir el resultado del partido")
 
-# Selectores de equipos
+# Obtener valores desde session_state (se actualizan después de los selectores)
+equipo_local_actual = st.session_state.get("select_local", equipos[0] if equipos else "")
+equipo_visitante_actual = st.session_state.get("select_visitante", equipos[1] if len(equipos) > 1 else equipos[0] if equipos else "")
+
+# Mostrar enfrentamiento con iconos PRIMERO (visualmente arriba)
+col_res1, col_res2, col_res3 = st.columns([2, 1, 2])
+
+with col_res1:
+    if equipo_local_actual in team_urls:
+        st.image(team_urls[equipo_local_actual], width=100)
+
+with col_res2:
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    st.markdown("### VS")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+with col_res3:
+    if equipo_visitante_actual in team_urls:
+        st.image(team_urls[equipo_visitante_actual], width=100)
+
+
+# Selectores de equipos DESPUÉS (pero se actualizarán los valores arriba)
 col1, col2 = st.columns(2)
 
 with col1:
-    equipo_local = st.selectbox("Equipo Local", equipos, index=0)
+    equipo_local = st.selectbox("Equipo Local", equipos, index=0, key="select_local")
 
 with col2:
-    equipo_visitante = st.selectbox("Equipo Visitante", equipos, index=1)
+    equipo_visitante = st.selectbox("Equipo Visitante", equipos, index=1, key="select_visitante")
+
 
 # Botón de predicción
 if st.button("Predecir Resultado", type="primary", use_container_width=True):
@@ -116,8 +160,8 @@ if st.button("Predecir Resultado", type="primary", use_container_width=True):
         'Promedio_Puntuacion_total_visitante_normalizado': 0.5,
         'local_team_value': 0.0,  # Valor dummy, se eliminará
         'visitante_team_value': 0.0,  # Valor dummy, se eliminará
-        'local_team_url': '',  # URL dummy, se eliminará
-        'visitante_team_url': '',  # URL dummy, se eliminará
+        'local_team_url': team_urls.get(equipo_local, ''),  # URL del equipo local
+        'visitante_team_url': team_urls.get(equipo_visitante, ''),  # URL del equipo visitante
         'local_team_value_normalized': 0.5,
         'visitante_team_value_normalized': 0.5,
     }
@@ -130,15 +174,26 @@ if st.button("Predecir Resultado", type="primary", use_container_width=True):
         prediccion = model.predict(df_pred)[0]
         probabilidades = model.predict_proba(df_pred)[0]
         
-        # Mostrar resultado
+        # Mostrar resultado con iconos
         st.markdown("---")
         
+        # Mostrar predicción
         if prediccion == "Ganador local":
-            st.success(f"🏆 {equipo_local} gana")
+            col_win1, col_win2 = st.columns([0.2, 0.8])
+            with col_win1:
+                if equipo_local in team_urls:
+                    st.image(team_urls[equipo_local], width=60)
+            with col_win2:
+                st.success(f"🏆 **{equipo_local}** gana")
         elif prediccion == "Ganador visitante":
-            st.success(f"🏆 {equipo_visitante} gana")
+            col_win1, col_win2 = st.columns([0.2, 0.8])
+            with col_win1:
+                if equipo_visitante in team_urls:
+                    st.image(team_urls[equipo_visitante], width=60)
+            with col_win2:
+                st.success(f"🏆 **{equipo_visitante}** gana")
         else:
-            st.info("🤝 Empate")
+            st.info("🤝 **Empate**")
         
         # Mostrar probabilidades
         st.markdown("### Probabilidades")
