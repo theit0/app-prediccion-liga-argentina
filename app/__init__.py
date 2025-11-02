@@ -1,2 +1,0 @@
-# Paquete de la aplicación
-

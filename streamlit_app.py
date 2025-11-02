@@ -8,7 +8,7 @@ import numpy as np
 import joblib
 import sys
 from pathlib import Path
-from app.preprocessing import DropColumns
+from sklearn.base import BaseEstimator, TransformerMixin
 
 # Configuración de página
 st.set_page_config(
@@ -17,6 +17,22 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="collapsed"
 )
+
+# Definir clase DropColumns (necesaria para cargar el modelo)
+class DropColumns(BaseEstimator, TransformerMixin):
+    """Transformador personalizado para eliminar columnas"""
+    def __init__(self, columns_to_drop=None):
+        self.columns_to_drop = columns_to_drop or []
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        # Solo eliminar columnas que existen
+        columns_to_drop = [col for col in self.columns_to_drop if col in X.columns]
+        if columns_to_drop:
+            return X.drop(columns=columns_to_drop)
+        return X
 
 # Cargar modelo y datos auxiliares
 @st.cache_resource
@@ -31,19 +47,18 @@ def load_model():
 
 @st.cache_data
 def load_auxiliary_data():
-    """Cargar lista de equipos y valores de mercado"""
+    """Cargar lista de equipos"""
     try:
-        equipos = joblib.load("app/models/equipos.pkl")
-        values = joblib.load("app/models/team_values_2025.pkl")
-        return equipos, values
+        equipos = joblib.load("equipos.pkl")
+        return equipos
     except FileNotFoundError:
-        st.error("No se encontraron los archivos auxiliares en app/models/.")
+        st.error("No se encontraron los archivos auxiliares.")
         st.stop()
 
 
 # Cargar datos
 model = load_model()
-equipos, team_values = load_auxiliary_data()
+equipos = load_auxiliary_data()
 
 # Interfaz
 st.title("⚽ Predicción de Resultados - Liga Argentina")
@@ -99,13 +114,17 @@ if st.button("Predecir Resultado", type="primary", use_container_width=True):
         'Promedio_Diferencia_gol_total_visitante_normalizado': 0.0,
         'Promedio_Puntuacion_total_local_normalizado': 0.5,
         'Promedio_Puntuacion_total_visitante_normalizado': 0.5,
+        'local_team_value': 0.0,  # Valor dummy, se eliminará
+        'visitante_team_value': 0.0,  # Valor dummy, se eliminará
+        'local_team_url': '',  # URL dummy, se eliminará
+        'visitante_team_url': '',  # URL dummy, se eliminará
         'local_team_value_normalized': 0.5,
         'visitante_team_value_normalized': 0.5,
     }
     
     # Crear DataFrame
     df_pred = pd.DataFrame([default_values])
-    
+
     # Hacer predicción
     try:
         prediccion = model.predict(df_pred)[0]
