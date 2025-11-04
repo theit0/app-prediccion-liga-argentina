@@ -5,6 +5,7 @@ App Streamlit para predecir resultados de partidos de la Liga Argentina
 import streamlit as st
 import pandas as pd
 import joblib
+from datetime import date
 from sklearn.base import BaseEstimator, TransformerMixin
 
 st.set_page_config(
@@ -115,32 +116,59 @@ if not fechas_subseason.empty:
     fecha_min_data = fechas_subseason.min().date()
     # Asegurar que la fecha mínima sea desde 2024
     fecha_min = max(fecha_min_data, fecha_limite_entrenamiento)
-    fecha_default = max(pd.Timestamp.now().date(), fecha_limite_entrenamiento)
 else:
     fecha_min = fecha_limite_entrenamiento
-    fecha_default = max(pd.Timestamp.now().date(), fecha_limite_entrenamiento)
 
-# Paso 3: Seleccionar fecha (solo desde 2024 en adelante, sin límite máximo)
+# Ajustar fecha al año de la temporada seleccionada
+if 'last_season' not in st.session_state or st.session_state.last_season != season:
+    hoy = pd.Timestamp.now().date()
+    fecha_default = pd.Timestamp(year=season, month=hoy.month, day=min(hoy.day, 28)).date()
+    fecha_default = max(fecha_default, fecha_min)
+    st.session_state.last_season = season
+else:
+    fecha_default = st.session_state.get('fecha_partido', max(pd.Timestamp.now().date(), fecha_min))
+
+# Paso 3: Seleccionar fecha
 fecha_partido = st.date_input("Fecha del partido", value=fecha_default, min_value=fecha_min)
+st.session_state.fecha_partido = fecha_partido
 
-# Paso 4: Seleccionar equipos (solo los que jugaron en esa subseason)
-col1, col2 = st.columns(2)
+# Paso 4: Seleccionar equipos
+subseason_key = f"{season}_{sub_season}"
+if 'last_subseason_key' not in st.session_state or st.session_state.last_subseason_key != subseason_key:
+    st.session_state.last_subseason_key = subseason_key
+    st.session_state.equipo_local = equipos_disponibles[0]
+    st.session_state.equipo_visitante = equipos_disponibles[1] if len(equipos_disponibles) > 1 else equipos_disponibles[0]
+
+col1, col2, col3 = st.columns([2.5, 0.5, 2.5])
 
 with col1:
     st.write("Equipo Local")
     col_img1, col_select1 = st.columns([0.8, 4.2], gap="small")
     img_placeholder1 = col_img1.empty()
     with col_select1:
-        equipo_local = st.selectbox("", equipos_disponibles, index=0, key="select_local", label_visibility="collapsed")
+        equipo_local = st.selectbox("", equipos_disponibles, 
+                                   index=equipos_disponibles.index(st.session_state.equipo_local) if st.session_state.equipo_local in equipos_disponibles else 0,
+                                   key="select_local", label_visibility="collapsed")
+        st.session_state.equipo_local = equipo_local
     if equipo_local in team_urls:
         img_placeholder1.image(team_urls[equipo_local], width=40)
 
 with col2:
+    st.write("")
+    st.write("")
+    if st.button("⇄", key="switch_teams", use_container_width=True, help="Intercambiar equipos"):
+        st.session_state.equipo_local, st.session_state.equipo_visitante = st.session_state.equipo_visitante, st.session_state.equipo_local
+        st.rerun()
+
+with col3:
     st.write("Equipo Visitante")
     col_img2, col_select2 = st.columns([0.8, 4.2], gap="small")
     img_placeholder2 = col_img2.empty()
     with col_select2:
-        equipo_visitante = st.selectbox("", equipos_disponibles, index=1 if len(equipos_disponibles) > 1 else 0, key="select_visitante", label_visibility="collapsed")
+        equipo_visitante = st.selectbox("", equipos_disponibles,
+                                       index=equipos_disponibles.index(st.session_state.equipo_visitante) if st.session_state.equipo_visitante in equipos_disponibles else 0,
+                                       key="select_visitante", label_visibility="collapsed")
+        st.session_state.equipo_visitante = equipo_visitante
     if equipo_visitante in team_urls:
         img_placeholder2.image(team_urls[equipo_visitante], width=40)
 
@@ -307,6 +335,40 @@ if st.button("Predecir Resultado", type="primary", use_container_width=True):
             for i, row in prob_df.iterrows():
                 prob_pct = row['Probabilidad'] * 100
                 st.progress(float(row['Probabilidad']), text=f"{row['Resultado']}: {prob_pct:.1f}%")
+            
+            # Desplegable con valores de entrada al modelo
+            with st.expander("Ver valores de entrada al modelo"):
+                # Obtener fechas de los partidos usados
+                fecha_partido_local = partido_local['fecha_del_partido'].date() if pd.notna(partido_local['fecha_del_partido']) else None
+                fecha_partido_visitante = partido_visitante['fecha_del_partido'].date() if pd.notna(partido_visitante['fecha_del_partido']) else None
+                
+                col_info1, col_info2 = st.columns(2)
+                
+                with col_info1:
+                    st.subheader("Equipo Local")
+                    st.write(f"**Equipo:** {equipo_local}")
+                    if fecha_partido_local:
+                        st.write(f"**Datos del partido:** {fecha_partido_local.strftime('%d/%m/%Y')}")
+                    st.write(f"**Partidos jugados:** {default_values['Partidos_jugados_local_previos']}")
+                    st.write(f"**Forma últimos 5:** {default_values['Forma_local_ultimos5']} ({default_values['Forma_local_puntos_ultimos5']} pts)")
+                    st.write(f"**Victorias en casa (norm):** {default_values['Victorias_local_en_casa_tasa_normalizada']:.3f}")
+                    st.write(f"**Goles marcados (norm):** {default_values['Promedio_Goles_marcados_totales_local_normalizado']:.3f}")
+                    st.write(f"**Goles recibidos (norm):** {default_values['Promedio_Goles_recibidos_totales_local_normalizado']:.3f}")
+                    st.write(f"**Valla invicta (norm):** {default_values['Valla_invicta_local_tasa_normalizada']:.3f}")
+                    st.write(f"**Valor equipo (norm):** {default_values['local_team_value_normalized']:.3f}")
+                
+                with col_info2:
+                    st.subheader("Equipo Visitante")
+                    st.write(f"**Equipo:** {equipo_visitante}")
+                    if fecha_partido_visitante:
+                        st.write(f"**Datos del partido:** {fecha_partido_visitante.strftime('%d/%m/%Y')}")
+                    st.write(f"**Partidos jugados:** {default_values['Partidos_jugados_visitante_previos']}")
+                    st.write(f"**Forma últimos 5:** {default_values['Forma_visitante_ultimos5']} ({default_values['Forma_visitante_puntos_ultimos5']} pts)")
+                    st.write(f"**Victorias fuera (norm):** {default_values['Victorias_visitante_fuera_tasa_normalizada']:.3f}")
+                    st.write(f"**Goles marcados (norm):** {default_values['Promedio_Goles_marcados_totales_visitante_normalizado']:.3f}")
+                    st.write(f"**Goles recibidos (norm):** {default_values['Promedio_Goles_recibidos_totales_visitante_normalizado']:.3f}")
+                    st.write(f"**Valla invicta (norm):** {default_values['Valla_invicta_visitante_tasa_normalizada']:.3f}")
+                    st.write(f"**Valor equipo (norm):** {default_values['visitante_team_value_normalized']:.3f}")
             
         except Exception as e:
             st.error(f"Error al hacer la predicción: {str(e)}")
