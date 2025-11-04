@@ -1,343 +1,523 @@
-"""
-App Streamlit para predecir resultados de partidos de la Liga Argentina
-"""
+from __future__ import annotations
 
-import streamlit as st
-import pandas as pd
+from dataclasses import dataclass
+import sys
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Tuple
+
+import altair as alt
 import joblib
+import numpy as np
+import pandas as pd
+import streamlit as st
 from sklearn.base import BaseEstimator, TransformerMixin
 
-st.set_page_config(page_title="Predicción Liga Argentina", page_icon="⚽", layout="centered", initial_sidebar_state="collapsed")
+from numpy.random import PCG64
+import numpy.random._pickle as np_random_pickle
+
+DATA_DIR = Path(__file__).resolve().parent
+MODEL_FILES: Dict[str, str] = {
+    "Regresion Logistica": "model.pkl",
+    "Random Forest": "model-rf.pkl",
+    "SVC": "model-svc.pkl",
+    "HistGradientBoosting": "model-hgb.pkl",
+}
+RESULT_LABELS = ["Ganador local", "Empate", "Ganador visitante"]
+ODDS_COLUMN_BY_RESULT = {
+    "Ganador local": "Cuota1",
+    "Empate": "CuotaX",
+    "Ganador visitante": "Cuota2",
+}
+
 
 class DropColumns(BaseEstimator, TransformerMixin):
-    def __init__(self, columns_to_drop=None):
-        self.columns_to_drop = columns_to_drop or []
-    def fit(self, X, y=None):
+    def __init__(self, columns_to_drop: Optional[Iterable[str]] = None) -> None:
+        self.columns_to_drop = list(columns_to_drop or [])
+
+    def fit(self, X, y=None):  # noqa: N803
         return self
-    def transform(self, X):
-        cols = [col for col in self.columns_to_drop if col in X.columns]
-        return X.drop(columns=cols) if cols else X
 
-@st.cache_resource
-def load_model():
-    try:
-        return joblib.load("model.pkl")
-    except FileNotFoundError:
-        st.error("No se encontró el archivo del modelo (model.pkl).")
-        st.stop()
+    def transform(self, X):  # noqa: N803
+        return X.drop(columns=self.columns_to_drop, errors="ignore")
 
-def load_single_model(file_path):
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
+
+sys.modules.setdefault("__main__", sys.modules[__name__])
+setattr(sys.modules["__main__"], "DropColumns", DropColumns)
+
+class LegacyPCG64(PCG64):
+    def __setstate__(self, state):
+        if isinstance(state, tuple) and len(state) == 2 and isinstance(state[0], dict):
+            head, _ = state
+            state = dict(head)
+            state["bit_generator"] = "LegacyPCG64"
+        super().__setstate__(state)
+
+
+np_random_pickle.BitGenerators["PCG64"] = LegacyPCG64
+np_random_pickle.BitGenerators["LegacyPCG64"] = LegacyPCG64
+np_random_pickle.BitGenerators.setdefault("numpy.random._pcg64.PCG64", LegacyPCG64)
+np_random_pickle.BitGenerators.setdefault(PCG64, LegacyPCG64)
+np_random_pickle.BitGenerators.setdefault(LegacyPCG64, LegacyPCG64)
+
+
+def _compatible_bit_generator_ctor(bit_generator_name="MT19937"):
+    candidates: List[object] = []
+    if isinstance(bit_generator_name, type):
+        candidates.extend(
+            [
+                bit_generator_name,
+                getattr(bit_generator_name, "__qualname__", ""),
+                getattr(bit_generator_name, "__name__", ""),
+                f"{bit_generator_name.__module__}.{bit_generator_name.__name__}",
+            ]
+        )
+    else:
+        candidates.append(bit_generator_name)
+        module = getattr(bit_generator_name, "__module__", "")
+        name = getattr(bit_generator_name, "__name__", "")
+        if module and name:
+            candidates.append(f"{module}.{name}")
+        cls = bit_generator_name.__class__
+        candidates.append(cls)
+        candidates.append(getattr(cls, "__name__", ""))
+        candidates.append(f"{cls.__module__}.{cls.__name__}")
+
+    for candidate in candidates:
+        if candidate in np_random_pickle.BitGenerators:
+            generator = np_random_pickle.BitGenerators[candidate]
+            return generator()
+
+    return np_random_pickle.__original_bit_generator_ctor(bit_generator_name)
+
+
+if not hasattr(np_random_pickle, "__original_bit_generator_ctor"):
+    np_random_pickle.__original_bit_generator_ctor = np_random_pickle.__bit_generator_ctor
+    np_random_pickle.__bit_generator_ctor = _compatible_bit_generator_ctor
+
+
+def _compatible_generator_ctor(
+    bit_generator_name="MT19937",
+    bit_generator_ctor=_compatible_bit_generator_ctor,
+):
+    return np_random_pickle.Generator(bit_generator_ctor(bit_generator_name))
+
+
+if not hasattr(np_random_pickle, "__original_generator_ctor"):
+    np_random_pickle.__original_generator_ctor = np_random_pickle.__generator_ctor
+    np_random_pickle.__generator_ctor = _compatible_generator_ctor
+
+
+@st.cache_data(show_spinner=False)
+def load_odds(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df = df.rename(
+        columns={
+            "Equipo1": "Equipo_local",
+            "Equipo2": "Equipo_visitante",
+            "Resultado": "marcador",
+        }
+    )
+    df["Fecha"] = pd.to_datetime(df["Fecha"], format="%d.%m.%Y", errors="coerce")
+    for col in ("Cuota1", "CuotaX", "Cuota2"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    def parse_score(value: str) -> Tuple[Optional[int], Optional[int], Optional[str]]:
         try:
-            return joblib.load(file_path)
-        except:
-            try:
-                return joblib.load(file_path, mmap_mode=None)
-            except:
-                return None
-
-def load_all_models():
-    models = {}
-    model_files = {"Logistic Regression": "model.pkl", "Random Forest": "model-rf.pkl", "SVC": "model-svc.pkl", "HGB": "model-hgb.pkl"}
-    failed = []
-    for name, file in model_files.items():
-        model = load_single_model(file)
-        if model:
-            models[name] = model
+            goles_local, goles_visita = value.split(":")
+            home = int(goles_local)
+            away = int(goles_visita)
+        except (AttributeError, ValueError):
+            return None, None, None
+        if home > away:
+            outcome = "Ganador local"
+        elif away > home:
+            outcome = "Ganador visitante"
         else:
-            failed.append(name)
-    if failed:
-        st.session_state['failed_models'] = failed
-    return models
+            outcome = "Empate"
+        return home, away, outcome
 
-@st.cache_data
-def load_auxiliary_data():
-    try:
-        return joblib.load("equipos.pkl")
-    except FileNotFoundError:
-        st.error("No se encontraron los archivos auxiliares.")
-        st.stop()
-
-@st.cache_data
-def load_team_urls():
-    try:
-        df = pd.read_csv("liga_argentina_features_v3.csv", sep=';')
-        urls = {}
-        for col in ['Equipo_local', 'Equipo_visitante']:
-            url_col = 'local_team_url' if col == 'Equipo_local' else 'visitante_team_url'
-            for eq, url in zip(df[col], df[url_col]):
-                if pd.notna(eq) and pd.notna(url) and url and eq not in urls:
-                    urls[eq] = url
-        return urls
-    except:
-        return {}
-
-@st.cache_data
-def load_cuotas():
-    try:
-        df = pd.read_csv("cuotas_2024.csv")
-        return df[df['Cuota1'].notna() & df['CuotaX'].notna() & df['Cuota2'].notna()]
-    except:
-        return pd.DataFrame()
-
-def get_default_features(equipo_local, equipo_visitante, fecha, team_urls):
-    fecha = pd.to_datetime(fecha, format='%d.%m.%Y', errors='coerce') if isinstance(fecha, str) else fecha
-    if pd.isna(fecha):
-        fecha = pd.Timestamp.now()
-    
-    defaults = {
-        'fecha_del_partido': fecha, 'season': fecha.year, 'sub_season': 1, 'fixture_id': 0,
-        'round': 'Regular Season - 1', 'Equipo_local_id': 0, 'Equipo_local': equipo_local,
-        'Equipo_visitante_id': 0, 'Equipo_visitante': equipo_visitante,
-        'Partidos_jugados_local_previos': 0, 'Partidos_jugados_visitante_previos': 0,
-        'Forma_local_ultimos5': '', 'Forma_visitante_ultimos5': '',
-        'Forma_local_puntos_ultimos5': 7, 'Forma_visitante_puntos_ultimos5': 7,
-        'Victorias_local_en_casa_tasa_normalizada': 0.5, 'Victorias_visitante_fuera_tasa_normalizada': 0.5,
-        'Empates_local_en_casa_tasa_normalizada': 0.5, 'Empates_visitante_fuera_tasa_normalizada': 0.5,
-        'Derrotas_local_en_casa_tasa_normalizada': 0.5, 'Derrotas_visitante_fuera_tasa_normalizada': 0.5,
-        'Promedio_Goles_marcados_totales_local_normalizado': 0.5, 'Promedio_Goles_marcados_totales_visitante_normalizado': 0.5,
-        'Promedio_Goles_recibidos_totales_local_normalizado': 0.5, 'Promedio_Goles_recibidos_totales_visitante_normalizado': 0.5,
-        'Promedio_Goles_marcados_local_en_casa_normalizado': 0.5, 'Promedio_Goles_marcados_visitante_fuera_normalizado': 0.5,
-        'Promedio_Goles_recibidos_local_en_casa_normalizado': 0.5, 'Promedio_Goles_recibidos_visitante_fuera_normalizado': 0.5,
-        'Valla_invicta_local_tasa_normalizada': 0.5, 'Valla_invicta_visitante_tasa_normalizada': 0.5,
-        'Promedio_Diferencia_gol_total_local_normalizado': 0.0, 'Promedio_Diferencia_gol_total_visitante_normalizado': 0.0,
-        'Promedio_Puntuacion_total_local_normalizado': 0.5, 'Promedio_Puntuacion_total_visitante_normalizado': 0.5,
-        'local_team_value': 0.0, 'visitante_team_value': 0.0,
-        'local_team_url': team_urls.get(equipo_local, ''), 'visitante_team_url': team_urls.get(equipo_visitante, ''),
-        'local_team_value_normalized': 0.5, 'visitante_team_value_normalized': 0.5,
-    }
-    
-    df = pd.DataFrame([defaults])
-    df['fecha_del_partido'] = pd.to_datetime(df['fecha_del_partido'], errors='coerce', utc=True)
-    df['partido_anio'] = df['fecha_del_partido'].dt.year
-    df['partido_mes'] = df['fecha_del_partido'].dt.month
-    df['partido_dia_semana'] = df['fecha_del_partido'].dt.dayofweek
+    parsed = df["marcador"].apply(parse_score)
+    df["goles_local"] = parsed.map(lambda x: x[0])
+    df["goles_visitante"] = parsed.map(lambda x: x[1])
+    df["resultado_real_desde_marcador"] = parsed.map(lambda x: x[2])
+    df["match_date"] = df["Fecha"]
     return df
 
-def parse_resultado(resultado_str):
-    try:
-        g_local, g_visitante = map(int, str(resultado_str).split(':'))
-        if g_local > g_visitante:
-            return "Ganador local"
-        elif g_visitante > g_local:
-            return "Ganador visitante"
-        return "Empate"
-    except:
-        return None
 
-def simulate_betting(models, cuotas_df, initial_balance, team_urls):
-    resultados = {name: {"balance": initial_balance, "apuestas": [], "errores": [], "historial": [initial_balance]} for name in models.keys()}
-    
-    for _, row in cuotas_df.iterrows():
-        resultado_real = parse_resultado(str(row['Resultado']))
-        if not resultado_real:
-            continue
-        
-        equipo_local, equipo_visitante = row['Equipo1'], row['Equipo2']
-        cuotas = {'Ganador local': float(row['Cuota1']), 'Empate': float(row['CuotaX']), 'Ganador visitante': float(row['Cuota2'])}
-        df_features = get_default_features(equipo_local, equipo_visitante, str(row['Fecha']), team_urls)
-        
-        for model_name, model in models.items():
-            if resultados[model_name]["balance"] <= 0:
-                resultados[model_name]["historial"].append(resultados[model_name]["balance"])
-                continue
-            try:
-                prediccion = model.predict(df_features)[0]
-                monto = max(10, resultados[model_name]["balance"] * 0.05)
-                cuota = cuotas[prediccion]
-                
-                if prediccion == resultado_real:
-                    resultados[model_name]["balance"] += monto * (cuota - 1)
-                    ganado = True
-                else:
-                    resultados[model_name]["balance"] -= monto
-                    ganado = False
-                
-                resultados[model_name]["historial"].append(resultados[model_name]["balance"])
-                resultados[model_name]["apuestas"].append({
-                    "partido": f"{equipo_local} vs {equipo_visitante}",
-                    "prediccion": prediccion, "resultado_real": resultado_real,
-                    "apuesta": monto, "cuota": cuota, "ganado": ganado,
-                    "balance_actual": resultados[model_name]["balance"]
-                })
-            except Exception as e:
-                resultados[model_name]["historial"].append(resultados[model_name]["balance"])
-                resultados[model_name]['errores'].append({
-                    "partido": f"{equipo_local} vs {equipo_visitante}",
-                    "error": str(e)[:100]
-                })
-    
-    return resultados
+@st.cache_data(show_spinner=False)
+def load_features(path: Path) -> Tuple[pd.DataFrame, List[str]]:
+    features_raw = pd.read_csv(path, sep=";")
+    feature_columns = [col for col in features_raw.columns if col != "Resultado"]
+    features = features_raw.copy()
+    features["match_datetime"] = pd.to_datetime(
+        features["fecha_del_partido"], errors="coerce"
+    )
+    features["match_date"] = (
+        features["match_datetime"].dt.tz_convert(None).dt.normalize()
+    )
+    return features, feature_columns
 
-equipos = load_auxiliary_data()
-team_urls = load_team_urls()
-tab1, tab2 = st.tabs(["Predecir", "Modelos"])
 
-with tab1:
-    model = load_model()
-    st.title("⚽ Predicción de Resultados - Liga Argentina")
-    st.markdown("Selecciona dos equipos para predecir el resultado del partido")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("Equipo Local")
-        col_img1, col_select1 = st.columns([0.8, 4.2], gap="small")
-        img_placeholder1 = col_img1.empty()
-        equipo_local = st.selectbox("", equipos, index=0, key="select_local", label_visibility="collapsed")
-        if equipo_local in team_urls:
-            img_placeholder1.image(team_urls[equipo_local], width=40)
-    
-    with col2:
-        st.write("Equipo Visitante")
-        col_img2, col_select2 = st.columns([0.8, 4.2], gap="small")
-        img_placeholder2 = col_img2.empty()
-        equipo_visitante = st.selectbox("", equipos, index=1, key="select_visitante", label_visibility="collapsed")
-        if equipo_visitante in team_urls:
-            img_placeholder2.image(team_urls[equipo_visitante], width=40)
-    
-    if st.button("Predecir Resultado", type="primary", use_container_width=True, key="predict_button"):
-        if equipo_local == equipo_visitante:
-            st.error("Por favor selecciona dos equipos diferentes")
-        else:
-            df_pred = get_default_features(equipo_local, equipo_visitante, pd.Timestamp.now(), team_urls)
-            try:
-                prediccion = model.predict(df_pred)[0]
-                probabilidades = model.predict_proba(df_pred)[0]
-                
-                st.markdown("---")
-                if prediccion == "Ganador local":
-                    img = f'<img src="{team_urls.get(equipo_local, "")}" width="40" style="vertical-align: middle; margin-right: 10px;">' if equipo_local in team_urls else ""
-                    st.markdown(f'<div style="margin-bottom: 20px; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 0.5rem; padding: .5rem; display: flex; justify-content: center; align-items: center; gap: .5rem;">{img}<span><strong>{equipo_local}</strong> gana</span></div>', unsafe_allow_html=True)
-                elif prediccion == "Ganador visitante":
-                    img = f'<img src="{team_urls.get(equipo_visitante, "")}" width="40" style="vertical-align: middle; margin-right: 10px;">' if equipo_visitante in team_urls else ""
-                    st.markdown(f'<div style="margin-bottom: 20px; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 0.5rem; padding: .5rem; display: flex; justify-content: center; align-items: center; gap: .5rem;">{img}<span><strong>{equipo_visitante}</strong> gana</span></div>', unsafe_allow_html=True)
-                else:
-                    st.info("🤝 **Empate**")
-                
-                prob_df = pd.DataFrame({'Resultado': model.named_steps['model'].classes_, 'Probabilidad': probabilidades})
-                for _, row in prob_df.iterrows():
-                    st.progress(float(row['Probabilidad']), text=f"{row['Resultado']}: {row['Probabilidad']*100:.1f}%")
-            except Exception as e:
-                st.error(f"Error al hacer la predicción: {str(e)}")
-                st.exception(e)
+@dataclass
+class SimulationDataset:
+    data: pd.DataFrame
+    feature_columns: List[str]
+    unmatched: pd.DataFrame
 
-with tab2:
-    st.title("🎮 Comparación de Modelos")
-    st.markdown("Simula apuestas con diferentes modelos y compara su rendimiento")
-    
-    models = load_all_models()
-    
-    if 'failed_models' in st.session_state and st.session_state['failed_models']:
-        st.warning(f"⚠️ Los siguientes modelos no se pudieron cargar: {', '.join(st.session_state['failed_models'])}. "
-                   f"Esto puede deberse a incompatibilidades de versiones entre numpy/joblib.")
-        del st.session_state['failed_models']
-    
-    if len(models) == 0:
-        st.error("No se pudieron cargar los modelos.")
-        st.info("💡 Sugerencia: `pip install --upgrade numpy joblib`")
-    else:
-        st.success(f"✅ {len(models)} modelo(s) cargado(s): {', '.join(models.keys())}")
-        initial_balance = st.number_input("Saldo inicial por modelo", min_value=100, value=1000, step=100, key="initial_balance")
-        
-        if st.button("🚀 Iniciar Simulación", type="primary", use_container_width=True):
-            cuotas_df = load_cuotas()
-            if cuotas_df.empty:
-                st.error("No se pudieron cargar las cuotas.")
+
+@st.cache_data(show_spinner=False)
+def build_simulation_dataset(
+    odds_path: Path, features_path: Path
+) -> SimulationDataset:
+    odds = load_odds(odds_path)
+    features, feature_columns = load_features(features_path)
+
+    features_2024 = features[
+        features["match_datetime"].dt.year == 2024
+    ].reset_index(drop=False)
+    odds_2024 = odds[odds["Fecha"].dt.year == 2024].reset_index(drop=False)
+
+    feature_map: Dict[Tuple[str, str], List[int]] = {}
+    for _, row in features_2024.iterrows():
+        key = (row["Equipo_local"], row["Equipo_visitante"])
+        feature_map.setdefault(key, []).append(row["index"])
+
+    used_features: set[int] = set()
+    records: List[Dict] = []
+    unmatched_rows: List[int] = []
+
+    for _, odds_row in odds_2024.iterrows():
+        key = (odds_row["Equipo_local"], odds_row["Equipo_visitante"])
+        candidates = feature_map.get(key, [])
+        available = [idx for idx in candidates if idx not in used_features]
+        search_space = available or candidates
+
+        best_idx: Optional[int] = None
+        best_delta: Optional[pd.Timedelta] = None
+        for candidate_idx in search_space:
+            candidate = features.loc[candidate_idx]
+            candidate_date = candidate.get("match_date")
+            if pd.isna(candidate_date) or pd.isna(odds_row["match_date"]):
+                delta = pd.Timedelta.max
             else:
-                st.info(f"Simulando apuestas para {len(cuotas_df)} partidos...")
-                with st.spinner("Calculando resultados..."):
-                    resultados = simulate_betting(models, cuotas_df, initial_balance, team_urls)
-                
-                st.markdown("---")
-                st.subheader("💰 Resultados Finales")
-                
-                resultados_df = pd.DataFrame([{
-                    "Modelo": name,
-                    "Saldo Final": f"${resultados[name]['balance']:.2f}",
-                    "Ganancia/Pérdida": f"${resultados[name]['balance'] - initial_balance:.2f}",
-                    "Retorno %": f"{((resultados[name]['balance'] - initial_balance) / initial_balance) * 100:.2f}%",
-                    "Apuestas Totales": len(resultados[name]['apuestas'])
-                } for name in resultados.keys()])
-                
-                resultados_df = resultados_df.sort_values('Saldo Final', key=lambda x: x.str.replace('$', '').astype(float), ascending=False)
-                st.dataframe(resultados_df, use_container_width=True, hide_index=True)
-                
-                st.markdown("---")
-                st.subheader("📈 Evolución del Balance")
-                model_names = list(resultados.keys())
-                try:
-                    import plotly.graph_objects as go
-                    cols = st.columns(3)
-                    for i in range(min(3, len(model_names))):
-                        with cols[i]:
-                            model_name = model_names[i]
-                            historial = resultados[model_name]["historial"]
-                            fig = go.Figure()
-                            fig.add_trace(go.Scatter(
-                                y=historial,
-                                mode='lines+markers',
-                                name=model_name,
-                                line=dict(color='green' if historial[-1] >= initial_balance else 'red', width=2),
-                                marker=dict(size=4)
-                            ))
-                            fig.add_hline(y=initial_balance, line_dash="dash", line_color="gray", 
-                                        annotation_text=f"Saldo inicial: ${initial_balance}")
-                            fig.update_layout(
-                                title=model_name,
-                                xaxis_title="Partido",
-                                yaxis_title="Balance ($)",
-                                height=300,
-                                showlegend=False,
-                                margin=dict(l=20, r=20, t=40, b=20)
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                except ImportError:
-                    st.info("💡 Para gráficos interactivos: `pip install plotly`")
-                
-                st.markdown("---")
-                st.subheader("📊 Comparación Visual")
-                try:
-                    import plotly.express as px
-                    fig = px.bar(x=list(resultados.keys()), y=[resultados[n]['balance'] for n in resultados.keys()],
-                                labels={'x': 'Modelo', 'y': 'Saldo Final ($)'},
-                                color=[resultados[n]['balance'] for n in resultados.keys()], color_continuous_scale='RdYlGn')
-                    fig.update_layout(showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
-                except ImportError:
-                    st.info("💡 Para gráficos interactivos: `pip install plotly`")
-                    balance_data = {name: resultados[name]['balance'] for name in resultados.keys()}
-                    max_b, min_b = max(balance_data.values()), min(balance_data.values())
-                    for name in sorted(balance_data, key=balance_data.get, reverse=True):
-                        bar_width = int((balance_data[name] - min_b) / (max_b - min_b) * 100) if max_b != min_b else 100
-                        color = "🟢" if balance_data[name] >= initial_balance else "🔴"
-                        st.markdown(f"{color} **{name}**: ${balance_data[name]:.2f} {'█' * bar_width}")
-                
-                st.markdown("---")
-                st.subheader("📋 Detalles por Modelo")
-                for model_name in resultados.keys():
-                    with st.expander(f"{model_name} - ${resultados[model_name]['balance']:.2f}"):
-                        apuestas = resultados[model_name].get('apuestas', [])
-                        errores = resultados[model_name].get('errores', [])
-                        
-                        if errores:
-                            st.warning(f"⚠️ Errores en {len(errores)} partido(s).")
-                            if errores:
-                                st.code(f"Error: {errores[0]['error']}\nPartido: {errores[0]['partido']}")
-                        
-                        if apuestas:
-                            ap_df = pd.DataFrame(apuestas)[['partido', 'prediccion', 'resultado_real', 'apuesta', 'cuota', 'ganado', 'balance_actual']]
-                            ap_df['apuesta'] = ap_df['apuesta'].apply(lambda x: f"${x:.2f}")
-                            ap_df['balance_actual'] = ap_df['balance_actual'].apply(lambda x: f"${x:.2f}")
-                            ap_df['ganado'] = ap_df['ganado'].apply(lambda x: "✅" if x else "❌")
-                            ap_df.columns = ['Partido', 'Predicción', 'Resultado Real', 'Apuesta', 'Cuota', 'Resultado', 'Balance Actual']
-                            st.dataframe(ap_df, use_container_width=True, hide_index=True)
-                            
-                            ganadas = sum(1 for a in apuestas if a['ganado'])
-                            col1, col2, col3 = st.columns(3)
-                            col1.metric("Apuestas Ganadas", ganadas)
-                            col2.metric("Apuestas Perdidas", len(apuestas) - ganadas)
-                            col3.metric("Tasa de Acierto", f"{(ganadas / len(apuestas) * 100):.1f}%")
-                        else:
-                            st.error("❌ No se pudo realizar ninguna apuesta.") if errores else st.info("No se realizaron apuestas.")
+                delta = abs(candidate_date - odds_row["match_date"])
+            if best_delta is None or delta < best_delta:
+                best_delta = delta
+                best_idx = candidate_idx
+
+        if best_idx is None:
+            unmatched_rows.append(odds_row["index"])
+            continue
+
+        used_features.add(best_idx)
+        feature_row = features.loc[best_idx].to_dict()
+        resultado_real = feature_row.pop("Resultado", None)
+
+        record = {
+            **feature_row,
+            "Resultado_real": resultado_real,
+            "Fecha": odds_row["Fecha"],
+            "marcador": odds_row["marcador"],
+            "Cuota1": odds_row["Cuota1"],
+            "CuotaX": odds_row["CuotaX"],
+            "Cuota2": odds_row["Cuota2"],
+            "goles_local": odds_row["goles_local"],
+            "goles_visitante": odds_row["goles_visitante"],
+            "resultado_real_desde_marcador": odds_row[
+                "resultado_real_desde_marcador"
+            ],
+        }
+        records.append(record)
+
+    dataset = pd.DataFrame(records)
+    dataset = dataset.sort_values("Fecha").reset_index(drop=True)
+
+    unmatched = odds.loc[unmatched_rows].reset_index(drop=True)
+    return SimulationDataset(
+        data=dataset,
+        feature_columns=feature_columns,
+        unmatched=unmatched,
+    )
+
+
+@st.cache_resource(show_spinner=False)
+def load_models(model_files: Dict[str, str]) -> Dict[str, object]:
+    models = {}
+    for name, filename in model_files.items():
+        model_path = DATA_DIR / filename
+        models[name] = joblib.load(model_path)
+    return models
+
+
+def simulate_betting(
+    model,
+    dataset: pd.DataFrame,
+    feature_columns: List[str],
+    stake: float,
+    initial_balance: float,
+) -> Tuple[pd.DataFrame, Dict[str, float]]:
+    if dataset.empty:
+        return pd.DataFrame(), {
+            "final_balance": initial_balance,
+            "profit": 0.0,
+            "aciertos": 0,
+            "total_bets": 0,
+            "accuracy": np.nan,
+            "roi": np.nan,
+        }
+
+    features = dataset[feature_columns].copy()
+    predictions = model.predict(features)
+
+    results = dataset[
+        [
+            "Fecha",
+            "Equipo_local",
+            "Equipo_visitante",
+            "marcador",
+            "Resultado_real",
+            "Cuota1",
+            "CuotaX",
+            "Cuota2",
+        ]
+    ].copy()
+    results["Prediccion"] = predictions
+    results["Acierto"] = results["Prediccion"] == results["Resultado_real"]
+    results["Resultado_match"] = results["Acierto"].map(
+        {True: "✅", False: "❌"}
+    )
+    results["Cuota_usada"] = results.apply(
+        lambda row: row.get(ODDS_COLUMN_BY_RESULT.get(row["Prediccion"]), np.nan),
+        axis=1,
+    )
+    results["Stake"] = stake
+    results["Ganancia"] = np.where(
+        results["Acierto"],
+        stake * (results["Cuota_usada"] - 1.0),
+        -stake,
+    )
+
+    balances: List[float] = []
+    balance = initial_balance
+    for profit in results["Ganancia"]:
+        balance += profit
+        balances.append(balance)
+    results["Balance"] = balances
+
+    total_bets = len(results)
+    aciertos = int(results["Acierto"].sum())
+    profit = balance - initial_balance
+    accuracy = aciertos / total_bets if total_bets else np.nan
+    roi = profit / initial_balance if initial_balance else np.nan
+
+    summary = {
+        "final_balance": balance,
+        "profit": profit,
+        "aciertos": aciertos,
+        "total_bets": total_bets,
+        "accuracy": accuracy,
+        "roi": roi,
+    }
+    return results, summary
+
+
+def format_currency(value: float) -> str:
+    return f"${value:,.2f}"
+
+
+def main() -> None:
+    st.set_page_config(
+        page_title="Simulacion de apuestas Liga Argentina 2024",
+        layout="wide",
+    )
+    st.title("Simulacion de apuestas con modelos entrenados")
+
+    dataset_bundle = build_simulation_dataset(
+        DATA_DIR / "cuotas_2024.csv",
+        DATA_DIR / "liga_argentina_features_v3.csv",
+    )
+
+    dataset = dataset_bundle.data
+    feature_columns = dataset_bundle.feature_columns
+    unmatched = dataset_bundle.unmatched
+
+    if dataset.empty:
+        st.error("No se encontraron datos para simular 2024.")
+        return
+
+    min_date = dataset["Fecha"].min()
+    max_date = dataset["Fecha"].max()
+    equipos = sorted(
+        set(dataset["Equipo_local"]).union(dataset["Equipo_visitante"])
+    )
+
+    with st.sidebar:
+        st.header("Parámetros de simulación")
+        initial_balance = st.number_input(
+            "Saldo inicial",
+            min_value=0.0,
+            value=1000.0,
+            step=100.0,
+        )
+        stake = st.number_input(
+            "Monto fijo por apuesta",
+            min_value=1.0,
+            value=50.0,
+            step=5.0,
+        )
+        model_selection = st.multiselect(
+            "Modelos a evaluar",
+            options=list(MODEL_FILES.keys()),
+            default=list(MODEL_FILES.keys()),
+        )
+        date_range = st.date_input(
+            "Rango de fechas",
+            value=(min_date.date(), max_date.date()),
+            min_value=min_date.date(),
+            max_value=max_date.date(),
+        )
+        equipo_filter = st.multiselect(
+            "Filtrar por equipos (opcional)",
+            options=equipos,
+        )
+
+    if not model_selection:
+        st.warning("Selecciona al menos un modelo para continuar.")
+        return
+
+    start_date, end_date = date_range
+    mask_date = dataset["Fecha"].between(
+        pd.to_datetime(start_date), pd.to_datetime(end_date)
+    )
+    df_filtered = dataset[mask_date].copy()
+
+    if equipo_filter:
+        df_filtered = df_filtered[
+            df_filtered["Equipo_local"].isin(equipo_filter)
+            | df_filtered["Equipo_visitante"].isin(equipo_filter)
+        ]
+
+    df_filtered = df_filtered.reset_index(drop=True)
+
+    if df_filtered.empty:
+        st.warning("No hay partidos que cumplan los filtros seleccionados.")
+        return
+
+    if not unmatched.empty:
+        with st.expander("Partidos sin features asociados"):
+            st.write(
+                "Los siguientes partidos no pudieron enlazarse con las "
+                "features disponibles y se excluyeron de la simulación."
+            )
+            st.dataframe(
+                unmatched[
+                    ["Fecha", "Equipo_local", "Equipo_visitante", "marcador"]
+                ],
+                use_container_width=True,
+            )
+
+    models = load_models(MODEL_FILES)
+
+    st.subheader(
+        f"Simulando {len(df_filtered)} partidos entre "
+        f"{pd.to_datetime(start_date).date()} y {pd.to_datetime(end_date).date()}"
+    )
+
+    all_results_for_plot: List[pd.DataFrame] = []
+
+    for model_name in model_selection:
+        st.markdown(f"### {model_name}")
+        model = models[model_name]
+        results, summary = simulate_betting(
+            model=model,
+            dataset=df_filtered,
+            feature_columns=feature_columns,
+            stake=stake,
+            initial_balance=initial_balance,
+        )
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Saldo final", format_currency(summary["final_balance"]))
+        col2.metric("Ganancia neta", format_currency(summary["profit"]))
+        accuracy = (
+            f"{summary['accuracy']*100:.1f}%"
+            if not np.isnan(summary["accuracy"])
+            else "N/A"
+        )
+        col3.metric("Acierto", f"{summary['aciertos']} / {summary['total_bets']}")
+        col4.metric("Efectividad", accuracy)
+
+        roi_value = summary["roi"]
+        if np.isnan(roi_value):
+            st.caption("ROI sobre saldo inicial: N/A")
+        else:
+            roi_percent = f"{roi_value*100:.1f}%"
+            if roi_value > 0:
+                roi_color = "#2ECC71"
+            elif roi_value < 0:
+                roi_color = "#E74C3C"
+            else:
+                roi_color = "#6C757D"
+            st.markdown(
+                f"<p style='color:{roi_color}; font-size:0.9rem; margin-top:0;'>"
+                f"ROI sobre saldo inicial: {roi_percent}"
+                "</p>",
+                unsafe_allow_html=True,
+            )
+
+        if results.empty:
+            st.info("No se generaron resultados para este modelo.")
+            continue
+
+        plot_section = results[["Fecha", "Balance"]].copy()
+        plot_section["Modelo"] = model_name
+        all_results_for_plot.append(plot_section)
+
+        display_cols = [
+            "Fecha",
+            "Equipo_local",
+            "Equipo_visitante",
+            "marcador",
+            "Resultado_real",
+            "Prediccion",
+            "Resultado_match",
+            "Cuota_usada",
+            "Ganancia",
+            "Balance",
+        ]
+        st.dataframe(
+            results[display_cols],
+            use_container_width=True,
+        )
+        csv_data = results.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Descargar detalle (.csv)",
+            data=csv_data,
+            file_name=f"simulacion_{model_name.replace(' ', '_').lower()}.csv",
+            mime="text/csv",
+        )
+
+    if all_results_for_plot:
+        plot_df = pd.concat(all_results_for_plot, ignore_index=True)
+        plot_df["Fecha"] = pd.to_datetime(plot_df["Fecha"])
+
+        st.subheader("Evolución comparativa del saldo")
+        chart = (
+            alt.Chart(plot_df)
+            .mark_line()
+            .encode(
+                x=alt.X("Fecha:T", title="Fecha"),
+                y=alt.Y("Balance:Q", title="Saldo acumulado"),
+                color=alt.Color("Modelo:N", title="Modelo"),
+                tooltip=[
+                    alt.Tooltip("Modelo:N", title="Modelo"),
+                    alt.Tooltip("Fecha:T", title="Fecha"),
+                    alt.Tooltip("Balance:Q", title="Saldo"),
+                ],
+            )
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+
+if __name__ == "__main__":
+    main()
