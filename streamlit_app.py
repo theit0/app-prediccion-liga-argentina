@@ -78,10 +78,52 @@ team_urls = load_team_urls()
 df_data = load_data()
 
 st.title("⚽ Predicción de Resultados - Liga Argentina")
-st.markdown("Selecciona dos equipos y la fecha del partido para predecir el resultado")
+st.markdown("Selecciona la temporada, subtemporada y equipos para predecir el resultado")
 
-fecha_partido = st.date_input("Fecha del partido", value=pd.Timestamp.now().date())
+# Paso 1: Seleccionar Temporada (solo 2024 o posteriores, ya que 2015-2023 se usaron para entrenar)
+seasons_todas = sorted(df_data['season'].unique(), reverse=True)
+seasons_disponibles = [s for s in seasons_todas if s >= 2024]
 
+if not seasons_disponibles:
+    st.warning("⚠️ No hay temporadas disponibles para predicción (2024 o posteriores). El modelo se entrenó con datos de 2015-2023.")
+    st.stop()
+
+season = st.selectbox("Temporada", options=seasons_disponibles, index=0)
+
+# Paso 2: Seleccionar Subtemporada basada en la temporada
+subseasons_disponibles = sorted(df_data[df_data['season'] == season]['sub_season'].unique())
+if not subseasons_disponibles:
+    st.error(f"No hay subtemporadas disponibles para la temporada {season}")
+    st.stop()
+
+sub_season = st.selectbox("Subtemporada", options=subseasons_disponibles, index=len(subseasons_disponibles)-1)
+
+# Obtener equipos que jugaron en esa season/sub_season
+df_subseason = df_data[(df_data['season'] == season) & (df_data['sub_season'] == sub_season)]
+equipos_local = sorted(df_subseason['Equipo_local'].unique())
+equipos_visitante = sorted(df_subseason['Equipo_visitante'].unique())
+equipos_disponibles = sorted(set(equipos_local + equipos_visitante))
+
+if not equipos_disponibles:
+    st.error(f"No hay equipos disponibles para la temporada {season} subtemporada {sub_season}")
+    st.stop()
+
+# Obtener rango de fechas de la subseason (solo desde 2024-01-01 en adelante)
+fecha_limite_entrenamiento = pd.Timestamp('2024-01-01').date()
+fechas_subseason = df_subseason['fecha_del_partido'].dropna()
+if not fechas_subseason.empty:
+    fecha_min_data = fechas_subseason.min().date()
+    # Asegurar que la fecha mínima sea desde 2024
+    fecha_min = max(fecha_min_data, fecha_limite_entrenamiento)
+    fecha_default = max(pd.Timestamp.now().date(), fecha_limite_entrenamiento)
+else:
+    fecha_min = fecha_limite_entrenamiento
+    fecha_default = max(pd.Timestamp.now().date(), fecha_limite_entrenamiento)
+
+# Paso 3: Seleccionar fecha (solo desde 2024 en adelante, sin límite máximo)
+fecha_partido = st.date_input("Fecha del partido", value=fecha_default, min_value=fecha_min)
+
+# Paso 4: Seleccionar equipos (solo los que jugaron en esa subseason)
 col1, col2 = st.columns(2)
 
 with col1:
@@ -89,7 +131,7 @@ with col1:
     col_img1, col_select1 = st.columns([0.8, 4.2], gap="small")
     img_placeholder1 = col_img1.empty()
     with col_select1:
-        equipo_local = st.selectbox("", equipos, index=0, key="select_local", label_visibility="collapsed")
+        equipo_local = st.selectbox("", equipos_disponibles, index=0, key="select_local", label_visibility="collapsed")
     if equipo_local in team_urls:
         img_placeholder1.image(team_urls[equipo_local], width=40)
 
@@ -98,7 +140,7 @@ with col2:
     col_img2, col_select2 = st.columns([0.8, 4.2], gap="small")
     img_placeholder2 = col_img2.empty()
     with col_select2:
-        equipo_visitante = st.selectbox("", equipos, index=1, key="select_visitante", label_visibility="collapsed")
+        equipo_visitante = st.selectbox("", equipos_disponibles, index=1 if len(equipos_disponibles) > 1 else 0, key="select_visitante", label_visibility="collapsed")
     if equipo_visitante in team_urls:
         img_placeholder2.image(team_urls[equipo_visitante], width=40)
 
@@ -107,145 +149,110 @@ if st.button("Predecir Resultado", type="primary", use_container_width=True):
     if equipo_local == equipo_visitante:
         st.error("Por favor selecciona dos equipos diferentes")
     else:
-        fecha_actual = pd.to_datetime(fecha_partido, utc=True)
-        
-        # Determinar season y sub_season basado en la fecha
-        df_fecha = df_data[df_data['fecha_del_partido'].notna()]
-        df_fecha = df_fecha[df_fecha['fecha_del_partido'] <= fecha_actual]
-        
-        if df_fecha.empty:
-            st.error("No hay datos históricos para la fecha seleccionada")
+        # Validar que la fecha sea desde 2024 en adelante
+        if fecha_partido < pd.Timestamp('2024-01-01').date():
+            st.error("❌ No se pueden predecir partidos anteriores a 2024, ya que esos datos se usaron para entrenar el modelo.")
             st.stop()
         
-        # Buscar la subseason más reciente para esa fecha
-        df_fecha = df_fecha.sort_values('fecha_del_partido', ascending=False)
-        ultima_subseason = df_fecha.iloc[0]
-        season = ultima_subseason['season']
-        sub_season = ultima_subseason['sub_season']
+        fecha_actual = pd.to_datetime(fecha_partido, utc=True)
         
-        # Buscar último partido del equipo local como local (primero en subseason actual, luego en anteriores)
+        # Buscar último partido del equipo local como local en la subseason actual (antes de la fecha seleccionada)
         df_local = df_data[(df_data['Equipo_local'] == equipo_local) & 
+                          (df_data['season'] == season) & 
+                          (df_data['sub_season'] == sub_season) &
                           (df_data['fecha_del_partido'] <= fecha_actual)]
-        df_local = df_local.sort_values(['season', 'sub_season', 'fecha_del_partido'], ascending=[False, False, False])
-        if not df_local.empty:
-            # Filtrar por subseason actual primero, si no hay, tomar el más reciente de cualquier subseason
-            df_local_actual = df_local[(df_local['season'] == season) & (df_local['sub_season'] == sub_season)]
-            df_local = df_local_actual if not df_local_actual.empty else df_local.iloc[:1]
         
-        # Buscar último partido del equipo visitante como visitante (primero en subseason actual, luego en anteriores)
-        df_visitante = df_data[(df_data['Equipo_visitante'] == equipo_visitante) & 
+        # Si no hay en la subseason actual, buscar el último partido sin importar subseason (>= 2024 y antes de la fecha)
+        if df_local.empty:
+            df_local = df_data[(df_data['Equipo_local'] == equipo_local) & 
+                              (df_data['season'] >= 2024) &
                               (df_data['fecha_del_partido'] <= fecha_actual)]
-        df_visitante = df_visitante.sort_values(['season', 'sub_season', 'fecha_del_partido'], ascending=[False, False, False])
-        if not df_visitante.empty:
-            # Filtrar por subseason actual primero, si no hay, tomar el más reciente de cualquier subseason
-            df_visitante_actual = df_visitante[(df_visitante['season'] == season) & (df_visitante['sub_season'] == sub_season)]
-            df_visitante = df_visitante_actual if not df_visitante_actual.empty else df_visitante.iloc[:1]
         
-        # Construir valores usando los últimos partidos encontrados
+        df_local = df_local.sort_values('fecha_del_partido', ascending=False)
+        
+        # Buscar último partido del equipo visitante como visitante en la subseason actual (antes de la fecha seleccionada)
+        df_visitante = df_data[(df_data['Equipo_visitante'] == equipo_visitante) & 
+                              (df_data['season'] == season) & 
+                              (df_data['sub_season'] == sub_season) &
+                              (df_data['fecha_del_partido'] <= fecha_actual)]
+        
+        # Si no hay en la subseason actual, buscar el último partido sin importar subseason (>= 2024 y antes de la fecha)
+        if df_visitante.empty:
+            df_visitante = df_data[(df_data['Equipo_visitante'] == equipo_visitante) & 
+                                  (df_data['season'] >= 2024) &
+                                  (df_data['fecha_del_partido'] <= fecha_actual)]
+        
+        df_visitante = df_visitante.sort_values('fecha_del_partido', ascending=False)
+        
+        # Validar que ambos equipos tengan datos
+        if df_local.empty:
+            st.error(f"❌ No se encontraron partidos previos para {equipo_local} como local.")
+            st.stop()
+        
+        if df_visitante.empty:
+            st.error(f"❌ No se encontraron partidos previos para {equipo_visitante} como visitante.")
+            st.stop()
+        
+        # Informar si se usaron datos de otra subseason o temporada
+        partido_local_found = df_local.iloc[0]
+        partido_visitante_found = df_visitante.iloc[0]
+        
+        if partido_local_found['season'] != season or partido_local_found['sub_season'] != sub_season:
+            st.info(f"ℹ️ Se usaron datos de {equipo_local} de la temporada {partido_local_found['season']} subtemporada {partido_local_found['sub_season']} (no se encontraron datos en {season}-{sub_season})")
+        
+        if partido_visitante_found['season'] != season or partido_visitante_found['sub_season'] != sub_season:
+            st.info(f"ℹ️ Se usaron datos de {equipo_visitante} de la temporada {partido_visitante_found['season']} subtemporada {partido_visitante_found['sub_season']} (no se encontraron datos en {season}-{sub_season})")
+        
+        # Construir valores usando los últimos partidos encontrados (con valores normalizados)
         def get_val(series, col, default):
             return series[col] if col in series and pd.notna(series[col]) else default
         
-        # Verificar si se usaron subseasons diferentes
-        if not df_local.empty and not df_visitante.empty:
-            partido_local = df_local.iloc[0]
-            partido_visitante = df_visitante.iloc[0]
-            
-            local_season = partido_local['season']
-            local_sub = partido_local['sub_season']
-            visitante_season = partido_visitante['season']
-            visitante_sub = partido_visitante['sub_season']
-            
-            if local_season != season or local_sub != sub_season or visitante_season != season or visitante_sub != sub_season:
-                st.info(f"⚠️ Se encontraron partidos en subseasons anteriores: Local en {local_season}-{local_sub}, Visitante en {visitante_season}-{visitante_sub}")
-            
-            default_values = {
-                'fecha_del_partido': fecha_actual,
-                'season': season,
-                'sub_season': sub_season,
-                'fixture_id': 0,
-                'round': get_val(partido_local, 'round', 'Regular Season - 1'),
-                'Equipo_local_id': get_val(partido_local, 'Equipo_local_id', 0),
-                'Equipo_local': equipo_local,
-                'Equipo_visitante_id': get_val(partido_visitante, 'Equipo_visitante_id', 0),
-                'Equipo_visitante': equipo_visitante,
-                'Partidos_jugados_local_previos': get_val(partido_local, 'Partidos_jugados_local_previos', 0),
-                'Partidos_jugados_visitante_previos': get_val(partido_visitante, 'Partidos_jugados_visitante_previos', 0),
-                'Forma_local_ultimos5': get_val(partido_local, 'Forma_local_ultimos5', ''),
-                'Forma_visitante_ultimos5': get_val(partido_visitante, 'Forma_visitante_ultimos5', ''),
-                'Forma_local_puntos_ultimos5': get_val(partido_local, 'Forma_local_puntos_ultimos5', 7),
-                'Forma_visitante_puntos_ultimos5': get_val(partido_visitante, 'Forma_visitante_puntos_ultimos5', 7),
-                'Victorias_local_en_casa_tasa_normalizada': get_val(partido_local, 'Victorias_local_en_casa_tasa_normalizada', 0.5),
-                'Victorias_visitante_fuera_tasa_normalizada': get_val(partido_visitante, 'Victorias_visitante_fuera_tasa_normalizada', 0.5),
-                'Empates_local_en_casa_tasa_normalizada': get_val(partido_local, 'Empates_local_en_casa_tasa_normalizada', 0.5),
-                'Empates_visitante_fuera_tasa_normalizada': get_val(partido_visitante, 'Empates_visitante_fuera_tasa_normalizada', 0.5),
-                'Derrotas_local_en_casa_tasa_normalizada': get_val(partido_local, 'Derrotas_local_en_casa_tasa_normalizada', 0.5),
-                'Derrotas_visitante_fuera_tasa_normalizada': get_val(partido_visitante, 'Derrotas_visitante_fuera_tasa_normalizada', 0.5),
-                'Promedio_Goles_marcados_totales_local_normalizado': get_val(partido_local, 'Promedio_Goles_marcados_totales_local_normalizado', 0.5),
-                'Promedio_Goles_marcados_totales_visitante_normalizado': get_val(partido_visitante, 'Promedio_Goles_marcados_totales_visitante_normalizado', 0.5),
-                'Promedio_Goles_recibidos_totales_local_normalizado': get_val(partido_local, 'Promedio_Goles_recibidos_totales_local_normalizado', 0.5),
-                'Promedio_Goles_recibidos_totales_visitante_normalizado': get_val(partido_visitante, 'Promedio_Goles_recibidos_totales_visitante_normalizado', 0.5),
-                'Promedio_Goles_marcados_local_en_casa_normalizado': get_val(partido_local, 'Promedio_Goles_marcados_local_en_casa_normalizado', 0.5),
-                'Promedio_Goles_marcados_visitante_fuera_normalizado': get_val(partido_visitante, 'Promedio_Goles_marcados_visitante_fuera_normalizado', 0.5),
-                'Promedio_Goles_recibidos_local_en_casa_normalizado': get_val(partido_local, 'Promedio_Goles_recibidos_local_en_casa_normalizado', 0.5),
-                'Promedio_Goles_recibidos_visitante_fuera_normalizado': get_val(partido_visitante, 'Promedio_Goles_recibidos_visitante_fuera_normalizado', 0.5),
-                'Valla_invicta_local_tasa_normalizada': get_val(partido_local, 'Valla_invicta_local_tasa_normalizada', 0.5),
-                'Valla_invicta_visitante_tasa_normalizada': get_val(partido_visitante, 'Valla_invicta_visitante_tasa_normalizada', 0.5),
-                'Promedio_Diferencia_gol_total_local_normalizado': get_val(partido_local, 'Promedio_Diferencia_gol_total_local_normalizado', 0.0),
-                'Promedio_Diferencia_gol_total_visitante_normalizado': get_val(partido_visitante, 'Promedio_Diferencia_gol_total_visitante_normalizado', 0.0),
-                'Promedio_Puntuacion_total_local_normalizado': get_val(partido_local, 'Promedio_Puntuacion_total_local_normalizado', 0.5),
-                'Promedio_Puntuacion_total_visitante_normalizado': get_val(partido_visitante, 'Promedio_Puntuacion_total_visitante_normalizado', 0.5),
-                'local_team_value': get_val(partido_local, 'local_team_value', 0.0),
-                'visitante_team_value': get_val(partido_visitante, 'visitante_team_value', 0.0),
-                'local_team_url': team_urls.get(equipo_local, ''),
-                'visitante_team_url': team_urls.get(equipo_visitante, ''),
-                'local_team_value_normalized': get_val(partido_local, 'local_team_value_normalized', 0.5),
-                'visitante_team_value_normalized': get_val(partido_visitante, 'visitante_team_value_normalized', 0.5),
-            }
-        else:
-            st.warning(f"No se encontraron partidos previos para uno o ambos equipos en la subseason {sub_season} de {season}. Usando valores por defecto.")
-            default_values = {
-                'fecha_del_partido': fecha_actual,
-                'season': season,
-                'sub_season': sub_season,
-                'fixture_id': 0,
-                'round': 'Regular Season - 1',
-                'Equipo_local_id': 0,
-                'Equipo_local': equipo_local,
-                'Equipo_visitante_id': 0,
-                'Equipo_visitante': equipo_visitante,
-                'Partidos_jugados_local_previos': 0,
-                'Partidos_jugados_visitante_previos': 0,
-                'Forma_local_ultimos5': '',
-                'Forma_visitante_ultimos5': '',
-                'Forma_local_puntos_ultimos5': 7,
-                'Forma_visitante_puntos_ultimos5': 7,
-                'Victorias_local_en_casa_tasa_normalizada': 0.5,
-                'Victorias_visitante_fuera_tasa_normalizada': 0.5,
-                'Empates_local_en_casa_tasa_normalizada': 0.5,
-                'Empates_visitante_fuera_tasa_normalizada': 0.5,
-                'Derrotas_local_en_casa_tasa_normalizada': 0.5,
-                'Derrotas_visitante_fuera_tasa_normalizada': 0.5,
-                'Promedio_Goles_marcados_totales_local_normalizado': 0.5,
-                'Promedio_Goles_marcados_totales_visitante_normalizado': 0.5,
-                'Promedio_Goles_recibidos_totales_local_normalizado': 0.5,
-                'Promedio_Goles_recibidos_totales_visitante_normalizado': 0.5,
-                'Promedio_Goles_marcados_local_en_casa_normalizado': 0.5,
-                'Promedio_Goles_marcados_visitante_fuera_normalizado': 0.5,
-                'Promedio_Goles_recibidos_local_en_casa_normalizado': 0.5,
-                'Promedio_Goles_recibidos_visitante_fuera_normalizado': 0.5,
-                'Valla_invicta_local_tasa_normalizada': 0.5,
-                'Valla_invicta_visitante_tasa_normalizada': 0.5,
-                'Promedio_Diferencia_gol_total_local_normalizado': 0.0,
-                'Promedio_Diferencia_gol_total_visitante_normalizado': 0.0,
-                'Promedio_Puntuacion_total_local_normalizado': 0.5,
-                'Promedio_Puntuacion_total_visitante_normalizado': 0.5,
-                'local_team_value': 0.0,
-                'visitante_team_value': 0.0,
-                'local_team_url': team_urls.get(equipo_local, ''),
-                'visitante_team_url': team_urls.get(equipo_visitante, ''),
-                'local_team_value_normalized': 0.5,
-                'visitante_team_value_normalized': 0.5,
-            }
+        partido_local = partido_local_found
+        partido_visitante = partido_visitante_found
+        
+        default_values = {
+            'fecha_del_partido': fecha_actual,
+            'season': season,
+            'sub_season': sub_season,
+            'fixture_id': 0,
+            'round': get_val(partido_local, 'round', 'Regular Season - 1'),
+            'Equipo_local_id': get_val(partido_local, 'Equipo_local_id', 0),
+            'Equipo_local': equipo_local,
+            'Equipo_visitante_id': get_val(partido_visitante, 'Equipo_visitante_id', 0),
+            'Equipo_visitante': equipo_visitante,
+            'Partidos_jugados_local_previos': get_val(partido_local, 'Partidos_jugados_local_previos', 0),
+            'Partidos_jugados_visitante_previos': get_val(partido_visitante, 'Partidos_jugados_visitante_previos', 0),
+            'Forma_local_ultimos5': get_val(partido_local, 'Forma_local_ultimos5', ''),
+            'Forma_visitante_ultimos5': get_val(partido_visitante, 'Forma_visitante_ultimos5', ''),
+            'Forma_local_puntos_ultimos5': get_val(partido_local, 'Forma_local_puntos_ultimos5', 7),
+            'Forma_visitante_puntos_ultimos5': get_val(partido_visitante, 'Forma_visitante_puntos_ultimos5', 7),
+            'Victorias_local_en_casa_tasa_normalizada': get_val(partido_local, 'Victorias_local_en_casa_tasa_normalizada', 0.5),
+            'Victorias_visitante_fuera_tasa_normalizada': get_val(partido_visitante, 'Victorias_visitante_fuera_tasa_normalizada', 0.5),
+            'Empates_local_en_casa_tasa_normalizada': get_val(partido_local, 'Empates_local_en_casa_tasa_normalizada', 0.5),
+            'Empates_visitante_fuera_tasa_normalizada': get_val(partido_visitante, 'Empates_visitante_fuera_tasa_normalizada', 0.5),
+            'Derrotas_local_en_casa_tasa_normalizada': get_val(partido_local, 'Derrotas_local_en_casa_tasa_normalizada', 0.5),
+            'Derrotas_visitante_fuera_tasa_normalizada': get_val(partido_visitante, 'Derrotas_visitante_fuera_tasa_normalizada', 0.5),
+            'Promedio_Goles_marcados_totales_local_normalizado': get_val(partido_local, 'Promedio_Goles_marcados_totales_local_normalizado', 0.5),
+            'Promedio_Goles_marcados_totales_visitante_normalizado': get_val(partido_visitante, 'Promedio_Goles_marcados_totales_visitante_normalizado', 0.5),
+            'Promedio_Goles_recibidos_totales_local_normalizado': get_val(partido_local, 'Promedio_Goles_recibidos_totales_local_normalizado', 0.5),
+            'Promedio_Goles_recibidos_totales_visitante_normalizado': get_val(partido_visitante, 'Promedio_Goles_recibidos_totales_visitante_normalizado', 0.5),
+            'Promedio_Goles_marcados_local_en_casa_normalizado': get_val(partido_local, 'Promedio_Goles_marcados_local_en_casa_normalizado', 0.5),
+            'Promedio_Goles_marcados_visitante_fuera_normalizado': get_val(partido_visitante, 'Promedio_Goles_marcados_visitante_fuera_normalizado', 0.5),
+            'Promedio_Goles_recibidos_local_en_casa_normalizado': get_val(partido_local, 'Promedio_Goles_recibidos_local_en_casa_normalizado', 0.5),
+            'Promedio_Goles_recibidos_visitante_fuera_normalizado': get_val(partido_visitante, 'Promedio_Goles_recibidos_visitante_fuera_normalizado', 0.5),
+            'Valla_invicta_local_tasa_normalizada': get_val(partido_local, 'Valla_invicta_local_tasa_normalizada', 0.5),
+            'Valla_invicta_visitante_tasa_normalizada': get_val(partido_visitante, 'Valla_invicta_visitante_tasa_normalizada', 0.5),
+            'Promedio_Diferencia_gol_total_local_normalizado': get_val(partido_local, 'Promedio_Diferencia_gol_total_local_normalizado', 0.0),
+            'Promedio_Diferencia_gol_total_visitante_normalizado': get_val(partido_visitante, 'Promedio_Diferencia_gol_total_visitante_normalizado', 0.0),
+            'Promedio_Puntuacion_total_local_normalizado': get_val(partido_local, 'Promedio_Puntuacion_total_local_normalizado', 0.5),
+            'Promedio_Puntuacion_total_visitante_normalizado': get_val(partido_visitante, 'Promedio_Puntuacion_total_visitante_normalizado', 0.5),
+            'local_team_value': get_val(partido_local, 'local_team_value', 0.0),
+            'visitante_team_value': get_val(partido_visitante, 'visitante_team_value', 0.0),
+            'local_team_url': team_urls.get(equipo_local, ''),
+            'visitante_team_url': team_urls.get(equipo_visitante, ''),
+            'local_team_value_normalized': get_val(partido_local, 'local_team_value_normalized', 0.5),
+            'visitante_team_value_normalized': get_val(partido_visitante, 'visitante_team_value_normalized', 0.5),
+        }
         
         df_pred = pd.DataFrame([default_values])
         
