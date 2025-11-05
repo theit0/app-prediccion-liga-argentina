@@ -1020,7 +1020,12 @@ equipos = load_auxiliary_data()
 team_urls = load_team_urls()
 df_data = load_data()
 
-st.title("⚽ Predicción de Resultados - Liga Argentina")
+# Mostrar logo y título lado a lado
+col_logo, col_titulo = st.columns([1, 3])
+with col_logo:
+    st.image("logo.png", use_container_width=False, width=150)
+with col_titulo:
+    st.title("Predicción de Resultados - Liga Argentina")
 
 # Dividir pantalla en dos columnas: izquierda (predicción) y derecha (simulador)
 col_left, col_right = st.columns([1, 1])
