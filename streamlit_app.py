@@ -1105,6 +1105,29 @@ with col_left:
             st.session_state.equipo_local = equipos_disponibles[0]
             st.session_state.equipo_visitante = equipos_disponibles[1] if len(equipos_disponibles) > 1 else equipos_disponibles[0]
 
+        # Obtener equipos actuales del session_state para mostrar logos
+        equipo_local_actual = st.session_state.get('equipo_local', equipos_disponibles[0])
+        equipo_visitante_actual = st.session_state.get('equipo_visitante', equipos_disponibles[1] if len(equipos_disponibles) > 1 else equipos_disponibles[0])
+        
+        # Contenedor con logos grandes centrados (arriba de los selectores)
+        col_logo_local, col_vs, col_logo_visitante = st.columns([1, 0.2, 1])
+        
+        with col_logo_local:
+            if equipo_local_actual in team_urls:
+                st.image(team_urls[equipo_local_actual], width=120)
+        
+        with col_vs:
+            st.markdown("""
+                <div style="display: flex; align-items: center; justify-content: center; height: 100%;">
+                    <h2 style="margin: 0; color: #666;">vs.</h2>
+                </div>
+            """, unsafe_allow_html=True)
+        
+        with col_logo_visitante:
+            if equipo_visitante_actual in team_urls:
+                st.image(team_urls[equipo_visitante_actual], width=120)
+        
+        # Selectores de equipos (debajo de los logos)
         col1, col2, col3 = st.columns([2.5, 0.5, 2.5])
 
         with col1:
@@ -1113,9 +1136,6 @@ with col_left:
                                        index=equipos_disponibles.index(st.session_state.equipo_local) if st.session_state.equipo_local in equipos_disponibles else 0,
                                        key="select_local", label_visibility="collapsed")
             st.session_state.equipo_local = equipo_local
-            # Mostrar imagen sin columnas anidadas
-            if equipo_local in team_urls:
-                st.image(team_urls[equipo_local], width=40)
 
         with col2:
             st.write("")
@@ -1130,9 +1150,6 @@ with col_left:
                                            index=equipos_disponibles.index(st.session_state.equipo_visitante) if st.session_state.equipo_visitante in equipos_disponibles else 0,
                                            key="select_visitante", label_visibility="collapsed")
             st.session_state.equipo_visitante = equipo_visitante
-            # Mostrar imagen sin columnas anidadas
-            if equipo_visitante in team_urls:
-                st.image(team_urls[equipo_visitante], width=40)
 
 
         if st.button("Predecir Resultado", type="primary", use_container_width=True, key="predict_button_left"):
