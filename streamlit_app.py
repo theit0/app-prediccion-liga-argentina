@@ -1049,7 +1049,11 @@ with col_left:
             st.warning("⚠️ No hay temporadas disponibles para predicción (2024 o posteriores). El modelo se entrenó con datos de 2015-2023.")
             st.stop()
 
-        season = st.selectbox("Temporada", options=seasons_disponibles, index=0)
+        # Selectores en una sola línea
+        col_temp, col_subtemp, col_fecha = st.columns(3)
+        
+        with col_temp:
+            season = st.selectbox("Temporada", options=seasons_disponibles, index=0)
 
         # Paso 2: Seleccionar Subtemporada basada en la temporada
         subseasons_disponibles = sorted(df_data[df_data['season'] == season]['sub_season'].unique())
@@ -1057,7 +1061,8 @@ with col_left:
             st.error(f"No hay subtemporadas disponibles para la temporada {season}")
             st.stop()
 
-        sub_season = st.selectbox("Subtemporada", options=subseasons_disponibles, index=len(subseasons_disponibles)-1)
+        with col_subtemp:
+            sub_season = st.selectbox("Subtemporada", options=subseasons_disponibles, index=len(subseasons_disponibles)-1)
 
         # Obtener equipos que jugaron en esa season/sub_season
         df_subseason = df_data[(df_data['season'] == season) & (df_data['sub_season'] == sub_season)]
@@ -1089,7 +1094,8 @@ with col_left:
             fecha_default = st.session_state.get('fecha_partido', max(pd.Timestamp.now().date(), fecha_min))
 
         # Paso 3: Seleccionar fecha
-        fecha_partido = st.date_input("Fecha del partido", value=fecha_default, min_value=fecha_min)
+        with col_fecha:
+            fecha_partido = st.date_input("Fecha del partido", value=fecha_default, min_value=fecha_min)
         st.session_state.fecha_partido = fecha_partido
 
         # Paso 4: Seleccionar equipos
@@ -1550,8 +1556,6 @@ with col_right:
                                         "(`predict_proba`)."
                                     )
 
-                st.markdown("---")
-
                 min_date = dataset["Fecha"].min()
                 max_date = dataset["Fecha"].max()
                 equipos = sorted(
@@ -1559,20 +1563,24 @@ with col_right:
                 )
 
                 # --- Controles: capital inicial, stake, modelos y filtros temporales.
-                initial_balance = st.number_input(
-                    "Saldo inicial",
-                    min_value=0.0,
-                    value=1000.0,
-                    step=100.0,
-                    key="sim_initial_balance",
-                )
-                stake = st.number_input(
-                    "Monto fijo por apuesta",
-                    min_value=1.0,
-                    value=50.0,
-                    step=5.0,
-                    key="sim_stake",
-                )
+                col_saldo, col_monto = st.columns(2)
+                
+                with col_saldo:
+                    initial_balance = st.number_input(
+                        "Saldo inicial",
+                        min_value=0.0,
+                        value=1000.0,
+                        step=100.0,
+                        key="sim_initial_balance",
+                    )
+                with col_monto:
+                    stake = st.number_input(
+                        "Monto fijo por apuesta",
+                        min_value=1.0,
+                        value=50.0,
+                        step=5.0,
+                        key="sim_stake",
+                    )
                 model_selection = st.multiselect(
                     "Modelos a evaluar",
                     options=list(models.keys()),
