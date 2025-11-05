@@ -14,6 +14,8 @@ import streamlit as st
 import pandas as pd
 import joblib
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from datetime import date
 from sklearn.base import BaseEstimator, TransformerMixin
 
@@ -494,6 +496,481 @@ def format_currency(value: float) -> str:
 
     return f"${value:,.2f}"
 
+# --- Función para generar gráfico radar de comparación de equipos
+def crear_grafico_radar_equipos(df: pd.DataFrame):
+    """Crea un gráfico radar comparativo de equipos usando Altair."""
+    try:
+        # Datos como local
+        local_metrics = df.groupby('Equipo_local').agg({
+            'local_team_value': 'mean',
+            'Victorias_local_en_casa_tasa_normalizada': 'mean',
+            'Promedio_Goles_marcados_local_en_casa_normalizado': 'mean',
+            'Promedio_Goles_recibidos_local_en_casa_normalizado': 'mean',
+            'Valla_invicta_local_tasa_normalizada': 'mean',
+            'Promedio_Puntuacion_total_local_normalizado': 'mean'
+        }).reset_index()
+
+        local_metrics.columns = [
+            'Equipo', 'Valor', 'Victorias', 'Goles_Marcados',
+            'Goles_Recibidos', 'Valla_Invicta', 'Puntuacion'
+        ]
+
+        # Datos como visitante
+        visit_metrics = df.groupby('Equipo_visitante').agg({
+            'visitante_team_value': 'mean',
+            'Victorias_visitante_fuera_tasa_normalizada': 'mean',
+            'Promedio_Goles_marcados_visitante_fuera_normalizado': 'mean',
+            'Promedio_Goles_recibidos_visitante_fuera_normalizado': 'mean',
+            'Valla_invicta_visitante_tasa_normalizada': 'mean',
+            'Promedio_Puntuacion_total_visitante_normalizado': 'mean'
+        }).reset_index()
+
+        visit_metrics.columns = [
+            'Equipo', 'Valor', 'Victorias', 'Goles_Marcados',
+            'Goles_Recibidos', 'Valla_Invicta', 'Puntuacion'
+        ]
+
+        # Combinar y promediar ambas condiciones
+        all_metrics = pd.concat([local_metrics, visit_metrics])
+        radar_data = all_metrics.groupby('Equipo').agg({
+            'Valor': 'mean',
+            'Victorias': 'mean',
+            'Goles_Marcados': 'mean',
+            'Goles_Recibidos': 'mean',
+            'Valla_Invicta': 'mean',
+            'Puntuacion': 'mean'
+        }).reset_index()
+
+        # Normalizar el valor del equipo a escala 0-1
+        if radar_data['Valor'].max() != radar_data['Valor'].min():
+            radar_data['Valor_Norm'] = (radar_data['Valor'] - radar_data['Valor'].min()) / (
+                radar_data['Valor'].max() - radar_data['Valor'].min()
+            )
+        else:
+            radar_data['Valor_Norm'] = 0.5
+
+        radar_data = radar_data.dropna()
+
+        if radar_data.empty:
+            return None
+
+        # Lista de equipos
+        equipos_disponibles = sorted(radar_data['Equipo'].unique().tolist())
+
+        if len(equipos_disponibles) == 0:
+            return None
+
+        # Preparar métricas (ahora todas normalizadas entre 0 y 1)
+        metrics = ['Victorias', 'Goles_Marcados', 'Goles_Recibidos', 'Valla_Invicta', 'Puntuacion', 'Valor_Norm']
+        metric_labels = ['Victorias', 'Goles A Favor', 'Goles Recibidos', 'Vallas Invictas', 'Puntuación', 'Valor Equipo']
+
+        # Crear datos en formato largo
+        radar_long = []
+        for _, row in radar_data.iterrows():
+            for metric, label in zip(metrics, metric_labels):
+                radar_long.append({
+                    'Equipo': row['Equipo'],
+                    'Metrica': label,
+                    'Valor': row[metric]
+                })
+
+        radar_df = pd.DataFrame(radar_long)
+
+        # Calcular coordenadas polares
+        metric_order = {label: i for i, label in enumerate(metric_labels)}
+        radar_df['orden'] = radar_df['Metrica'].map(metric_order)
+        radar_df['angulo'] = (radar_df['orden'] / len(metric_labels)) * 2 * np.pi
+        radar_df['x'] = radar_df['Valor'] * np.cos(radar_df['angulo'])
+        radar_df['y'] = radar_df['Valor'] * np.sin(radar_df['angulo'])
+
+        # Cerrar el polígono para cada equipo
+        radar_df_closed = []
+        for equipo in radar_df['Equipo'].unique():
+            equipo_data = radar_df[radar_df['Equipo'] == equipo].copy()
+            first_point = equipo_data.iloc[0:1].copy()
+            radar_df_closed.append(pd.concat([equipo_data, first_point]))
+
+        radar_df_closed = pd.concat(radar_df_closed, ignore_index=True)
+
+        # Crear datos auxiliares
+        axis_data = []
+        for label in metric_labels:
+            orden = metric_order[label]
+            angulo = (orden / len(metric_labels)) * 2 * np.pi
+            axis_data.append({
+                'Metrica': label,
+                'x': 0, 'y': 0,
+                'x2': np.cos(angulo),
+                'y2': np.sin(angulo)
+            })
+        axis_df = pd.DataFrame(axis_data)
+
+        label_data = []
+        for label in metric_labels:
+            orden = metric_order[label]
+            angulo = (orden / len(metric_labels)) * 2 * np.pi
+            label_data.append({
+                'Metrica': label,
+                'x': 1.2 * np.cos(angulo),
+                'y': 1.2 * np.sin(angulo)
+            })
+        label_df = pd.DataFrame(label_data)
+
+        circle_data = []
+        for r in [0.2, 0.4, 0.6, 0.8, 1.0]:
+            for i in range(len(metric_labels) + 1):
+                angulo = (i / len(metric_labels)) * 2 * np.pi
+                circle_data.append({
+                    'radio': r,
+                    'x': r * np.cos(angulo),
+                    'y': r * np.sin(angulo)
+                })
+        circle_df = pd.DataFrame(circle_data)
+
+        # Crear selecciones de equipos
+        equipo1_select = alt.selection_point(
+            name='equipo1',
+            fields=['Equipo'],
+            bind=alt.binding_select(
+                options=[None] + equipos_disponibles,
+                labels=['Seleccionar...'] + equipos_disponibles,
+                name='Equipo 1: '
+            ),
+            value=[{'Equipo': equipos_disponibles[0]}]
+        )
+
+        equipo2_select = alt.selection_point(
+            name='equipo2',
+            fields=['Equipo'],
+            bind=alt.binding_select(
+                options=[None] + equipos_disponibles,
+                labels=['Seleccionar...'] + equipos_disponibles,
+                name='Equipo 2: '
+            ),
+            value=[{'Equipo': equipos_disponibles[1] if len(equipos_disponibles) > 1 else equipos_disponibles[0]}]
+        )
+
+        # Círculos de referencia
+        circles = alt.Chart(circle_df).mark_line(
+            strokeWidth=0.5, stroke='lightgray', opacity=0.5
+        ).encode(
+            x=alt.X('x:Q', scale=alt.Scale(domain=[-1.4, 1.4]), axis=None),
+            y=alt.Y('y:Q', scale=alt.Scale(domain=[-1.4, 1.4]), axis=None),
+            detail='radio:Q'
+        )
+
+        # Ejes
+        axes = alt.Chart(axis_df).mark_rule(
+            strokeWidth=1, stroke='gray', opacity=0.5
+        ).encode(x='x:Q', y='y:Q', x2='x2:Q', y2='y2:Q')
+
+        # Labels
+        labels = alt.Chart(label_df).mark_text(
+            fontSize=12, fontWeight='bold'
+        ).encode(x='x:Q', y='y:Q', text='Metrica:N')
+
+        # Polígono Equipo 1
+        radar1 = alt.Chart(radar_df_closed).mark_line(
+            point=True, strokeWidth=3, filled=True, opacity=0.3
+        ).encode(
+            x='x:Q', y='y:Q',
+            order='orden:Q',
+            color=alt.value('#1f77b4'),  # Color for team 1
+            tooltip=[
+                alt.Tooltip('Equipo:N'),
+                alt.Tooltip('Metrica:N'),
+                alt.Tooltip('Valor:Q', format='.3f', title='Valor (0-1)')
+            ]
+        ).add_params(
+            equipo1_select
+        ).transform_filter(
+            equipo1_select
+        )
+
+        # Polígono Equipo 2
+        radar2 = alt.Chart(radar_df_closed).mark_line(
+            point=True, strokeWidth=3, filled=True, opacity=0.3
+        ).encode(
+            x='x:Q', y='y:Q',
+            order='orden:Q',
+            color=alt.value('#ff7f0e'),  # Color for team 2
+            tooltip=[
+                alt.Tooltip('Equipo:N'),
+                alt.Tooltip('Metrica:N'),
+                alt.Tooltip('Valor:Q', format='.3f', title='Valor (0-1)')
+            ]
+        ).add_params(
+            equipo2_select
+        ).transform_filter(
+            equipo2_select
+        )
+
+        # Combinar todo
+        radar_chart = (circles + axes + labels + radar1 + radar2).properties(
+            width=600,
+            height=600,
+            title={
+                'text': 'Comparación de Equipos',
+            }
+        )
+
+        return radar_chart
+
+    except Exception as e:
+        return None
+
+# --- Función para generar gráfico de comparación de forma reciente entre equipos
+def crear_grafico_comparacion_forma(df: pd.DataFrame, equipo1: str, equipo2: str, fecha: str):
+    """Crea un gráfico de comparación de forma reciente entre dos equipos usando matplotlib."""
+    try:
+        # Preparar datos de forma reciente
+        forma_data = df[['fecha_del_partido', 'Equipo_local', 'Equipo_visitante',
+                         'Forma_local_puntos_ultimos5', 'Forma_visitante_puntos_ultimos5',
+                         'Forma_local_ultimos5', 'Forma_visitante_ultimos5']].copy()
+
+        forma_data['fecha'] = pd.to_datetime(forma_data['fecha_del_partido'])
+
+        # Crear dataset combinado
+        forma_local = forma_data[['fecha', 'Equipo_local', 'Forma_local_puntos_ultimos5', 'Forma_local_ultimos5']].copy()
+        forma_local.columns = ['fecha', 'Equipo', 'Puntos_Ultimos5', 'Forma_Ultimos5']
+
+        forma_visitante = forma_data[['fecha', 'Equipo_visitante', 'Forma_visitante_puntos_ultimos5', 'Forma_visitante_ultimos5']].copy()
+        forma_visitante.columns = ['fecha', 'Equipo', 'Puntos_Ultimos5', 'Forma_Ultimos5']
+
+        forma_combined = pd.concat([forma_local, forma_visitante])
+        forma_combined = forma_combined.dropna(subset=['Puntos_Ultimos5'])
+        forma_combined = forma_combined.sort_values('fecha')
+        forma_combined['fecha_str'] = forma_combined['fecha'].dt.strftime('%Y-%m-%d')
+
+        # Filtrar datos
+        data_eq1 = forma_combined[(forma_combined['Equipo'] == equipo1) &
+                                  (forma_combined['fecha_str'] == fecha)]
+        data_eq2 = forma_combined[(forma_combined['Equipo'] == equipo2) &
+                                  (forma_combined['fecha_str'] == fecha)]
+
+        if data_eq1.empty:
+            data_eq1 = forma_combined[forma_combined['Equipo'] == equipo1].tail(1)
+            if not data_eq1.empty:
+                fecha_mostrada_eq1 = data_eq1['fecha_str'].values[0]
+                st.warning(f"No hay datos para {equipo1} en la fecha {fecha}. Mostrando último dato disponible: {fecha_mostrada_eq1}")
+
+        if data_eq2.empty:
+            data_eq2 = forma_combined[forma_combined['Equipo'] == equipo2].tail(1)
+            if not data_eq2.empty:
+                fecha_mostrada_eq2 = data_eq2['fecha_str'].values[0]
+                st.warning(f"No hay datos para {equipo2} en la fecha {fecha}. Mostrando último dato disponible: {fecha_mostrada_eq2}")
+
+        if data_eq1.empty or data_eq2.empty:
+            st.error("❌ No se pueden mostrar datos para la comparación")
+            return None
+
+        # Crear figura
+        fig, axes = plt.subplots(3, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [2, 1, 1]})
+        fig.suptitle('Comparación de Forma Reciente entre Equipos', fontsize=16, fontweight='bold')
+
+        # GRÁFICO 1: Barras de puntos
+        ax1 = axes[0]
+
+        puntos_eq1 = data_eq1['Puntos_Ultimos5'].values[0]
+        puntos_eq2 = data_eq2['Puntos_Ultimos5'].values[0]
+
+        bars = ax1.barh([equipo1, equipo2], [puntos_eq1, puntos_eq2],
+                        color=['#4472C4', '#ED7D31'], height=0.5)
+
+        ax1.set_xlim(0, 15)
+        ax1.set_xlabel('Puntos (últimos 5 partidos)', fontsize=12)
+        ax1.set_title('Puntos Obtenidos', fontsize=13, fontweight='bold')
+        ax1.grid(axis='x', alpha=0.3)
+
+        # Añadir valores en las barras
+        for i, (bar, puntos) in enumerate(zip(bars, [puntos_eq1, puntos_eq2])):
+            ax1.text(puntos + 0.3, bar.get_y() + bar.get_height()/2,
+                    f'{int(puntos)} pts', va='center', fontweight='bold', fontsize=11)
+
+        # Líneas de referencia
+        ax1.axvline(x=15, color='green', linestyle='--', alpha=0.4, linewidth=1)
+        ax1.axvline(x=10, color='blue', linestyle='--', alpha=0.3, linewidth=1)
+        ax1.axvline(x=7.5, color='gray', linestyle='--', alpha=0.3, linewidth=1)
+
+        # GRÁFICO 2: Racha Equipo 1
+        ax2 = axes[1]
+        forma_eq1 = str(data_eq1['Forma_Ultimos5'].values[0]) if pd.notna(data_eq1['Forma_Ultimos5'].values[0]) else 'N/A'
+
+        ax2.set_xlim(0, 5)
+        ax2.set_ylim(0, 1)
+        ax2.set_title(f'Racha Equipo 1: {equipo1}', fontsize=12, fontweight='bold')
+        ax2.axis('off')
+
+        if forma_eq1 != 'N/A':
+            for i, resultado in enumerate(forma_eq1):
+                color = {'W': '#2ca02c', 'D': '#ffcc00', 'L': '#d62728'}.get(resultado, 'gray')
+                rect = mpatches.Rectangle((i, 0.2), 0.8, 0.6, linewidth=2,
+                                         edgecolor='white', facecolor=color)
+                ax2.add_patch(rect)
+                texto = {'W': 'V', 'D': 'E', 'L': 'D'}.get(resultado, '?')
+                ax2.text(i + 0.4, 0.5, texto, ha='center', va='center',
+                        fontsize=14, fontweight='bold', color='white')
+
+        ax2.text(2.5, -0.2, '← Más antiguo    Más reciente →', ha='center',
+                fontsize=9, style='italic', color='gray')
+
+        # GRÁFICO 3: Racha Equipo 2
+        ax3 = axes[2]
+        forma_eq2 = str(data_eq2['Forma_Ultimos5'].values[0]) if pd.notna(data_eq2['Forma_Ultimos5'].values[0]) else 'N/A'
+
+        ax3.set_xlim(0, 5)
+        ax3.set_ylim(0, 1)
+        ax3.set_title(f'Racha Equipo 2: {equipo2}', fontsize=12, fontweight='bold')
+        ax3.axis('off')
+
+        if forma_eq2 != 'N/A':
+            for i, resultado in enumerate(forma_eq2):
+                color = {'W': '#2ca02c', 'D': '#ffcc00', 'L': '#d62728'}.get(resultado, 'gray')
+                rect = mpatches.Rectangle((i, 0.2), 0.8, 0.6, linewidth=2,
+                                         edgecolor='white', facecolor=color)
+                ax3.add_patch(rect)
+                texto = {'W': 'V', 'D': 'E', 'L': 'D'}.get(resultado, '?')
+                ax3.text(i + 0.4, 0.5, texto, ha='center', va='center',
+                        fontsize=14, fontweight='bold', color='white')
+
+        ax3.text(2.5, -0.2, '← Más antiguo    Más reciente →', ha='center',
+                fontsize=9, style='italic', color='gray')
+
+        # Leyenda
+        victoria_patch = mpatches.Patch(color='#2ca02c', label='Victoria (V)')
+        empate_patch = mpatches.Patch(color='#ffcc00', label='Empate (E)')
+        derrota_patch = mpatches.Patch(color='#d62728', label='Derrota (D)')
+        fig.legend(handles=[victoria_patch, empate_patch, derrota_patch],
+                  loc='lower center', ncol=3, bbox_to_anchor=(0.5, -0.02))
+
+        plt.tight_layout()
+        return fig, puntos_eq1, puntos_eq2, forma_eq1, forma_eq2
+
+    except Exception as e:
+        st.error(f"Error al generar el gráfico de comparación de forma: {str(e)}")
+        return None, None, None, None, None
+
+# --- Función helper para preparar datos de forma
+def preparar_datos_forma(df: pd.DataFrame):
+    """Prepara los datos de forma reciente para los selectores."""
+    try:
+        forma_data = df[['fecha_del_partido', 'Equipo_local', 'Equipo_visitante',
+                         'Forma_local_puntos_ultimos5', 'Forma_visitante_puntos_ultimos5',
+                         'Forma_local_ultimos5', 'Forma_visitante_ultimos5']].copy()
+
+        forma_data['fecha'] = pd.to_datetime(forma_data['fecha_del_partido'])
+
+        # Crear dataset combinado
+        forma_local = forma_data[['fecha', 'Equipo_local', 'Forma_local_puntos_ultimos5', 'Forma_local_ultimos5']].copy()
+        forma_local.columns = ['fecha', 'Equipo', 'Puntos_Ultimos5', 'Forma_Ultimos5']
+
+        forma_visitante = forma_data[['fecha', 'Equipo_visitante', 'Forma_visitante_puntos_ultimos5', 'Forma_visitante_ultimos5']].copy()
+        forma_visitante.columns = ['fecha', 'Equipo', 'Puntos_Ultimos5', 'Forma_Ultimos5']
+
+        forma_combined = pd.concat([forma_local, forma_visitante])
+        forma_combined = forma_combined.dropna(subset=['Puntos_Ultimos5'])
+        forma_combined = forma_combined.sort_values('fecha')
+        forma_combined['fecha_str'] = forma_combined['fecha'].dt.strftime('%Y-%m-%d')
+
+        equipos_disponibles = sorted(forma_combined['Equipo'].unique().tolist())
+        fechas_disponibles = sorted(forma_combined['fecha_str'].unique().tolist())
+
+        return forma_combined, equipos_disponibles, fechas_disponibles
+    except Exception as e:
+        return None, [], []
+
+# --- Función para generar gráfico de relación entre valor de mercado y rendimiento
+def crear_grafico_valor_rendimiento(df: pd.DataFrame):
+    """Crea un scatter plot mostrando la relación entre valor de mercado y porcentaje de victorias."""
+    try:
+        equipos_stats = []
+        
+        for season in df['season'].unique():
+            season_df = df[df['season'] == season]
+            for equipo in season_df['Equipo_local'].unique():
+                local_games = season_df[season_df['Equipo_local'] == equipo]
+                away_games = season_df[season_df['Equipo_visitante'] == equipo]
+                
+                wins_local = (local_games['Resultado'] == 'Ganador local').sum()
+                wins_away = (away_games['Resultado'] == 'Ganador visitante').sum()
+                
+                total_games = len(local_games) + len(away_games)
+                total_wins = wins_local + wins_away
+                
+                valor = local_games['local_team_value'].iloc[0] if len(local_games) > 0 else (
+                    away_games['visitante_team_value'].iloc[0] if len(away_games) > 0 else None)
+                
+                if total_games > 0 and pd.notna(valor):
+                    equipos_stats.append({
+                        'equipo': equipo, 'season': season, 'victorias': total_wins, 'partidos': total_games,
+                        'porcentaje_victorias': (total_wins / total_games) * 100, 'valor_mercado': valor
+                    })
+        
+        equipos_df = pd.DataFrame(equipos_stats)
+        
+        if equipos_df.empty:
+            return None
+        
+        cinco_grandes = ['River Plate', 'Boca Juniors', 'Racing Club', 'San Lorenzo', 'Independiente']
+        equipos_df['categoria'] = equipos_df['equipo'].apply(lambda x: '5 Grandes' if x in cinco_grandes else 'Otros')
+        
+        # Selector de temporada con dropdown
+        seasons_available = sorted(equipos_df['season'].unique().tolist())
+        if not seasons_available:
+            return None
+        
+        season_dropdown = alt.binding_select(
+            options=seasons_available,
+            name='Temporada: '
+        )
+        season_select = alt.selection_point(
+            fields=['season'], 
+            bind=season_dropdown, 
+            value=seasons_available[-1] if seasons_available else None
+        )
+        
+        # Scatter plot que solo muestra la temporada seleccionada
+        scatter = alt.Chart(equipos_df).mark_circle(size=150, opacity=0.85).encode(
+            x=alt.X('valor_mercado:Q', title='Valor de Mercado (millones €)', scale=alt.Scale(zero=False),
+                    axis=alt.Axis(labelFontSize=12, titleFontSize=13)),
+            y=alt.Y('porcentaje_victorias:Q', title='Porcentaje de Victorias (%)',
+                    axis=alt.Axis(labelFontSize=12, titleFontSize=13)),
+            color=alt.Color('categoria:N',
+                           scale=alt.Scale(domain=['5 Grandes', 'Otros'], range=['#e74c3c', '#3498db']),
+                           legend=alt.Legend(title='Categoría', titleFontSize=14, labelFontSize=12)),
+            size=alt.Size('partidos:Q', scale=alt.Scale(range=[100, 500]),
+                         legend=alt.Legend(title='Partidos', titleFontSize=12)),
+            tooltip=[
+                alt.Tooltip('equipo:N', title='Equipo'),
+                alt.Tooltip('season:O', title='Temporada'),
+                alt.Tooltip('valor_mercado:Q', title='Valor (M€)', format='.1f'),
+                alt.Tooltip('porcentaje_victorias:Q', title='% Victorias', format='.1f'),
+                alt.Tooltip('victorias:Q', title='Victorias'),
+                alt.Tooltip('partidos:Q', title='Partidos')
+            ]
+        ).transform_filter(
+            season_select
+        ).add_params(season_select)
+        
+        # Línea de regresión para la temporada seleccionada
+        regression = scatter.transform_regression(
+            'valor_mercado', 'porcentaje_victorias', method='linear'
+        ).mark_line(color='#e67e22', strokeWidth=3, strokeDash=[5, 5])
+        
+        chart = (scatter + regression).properties(
+            width=750, height=500,
+            title=alt.TitleParams(
+                text='Relación entre Valor de Mercado y Rendimiento',
+                subtitle='Selecciona una temporada del menú | Tamaño del círculo = cantidad de partidos',
+                fontSize=18, fontWeight='bold', anchor='middle'
+            )
+        ).configure_view(strokeWidth=0)
+        
+        return chart
+        
+    except Exception as e:
+        return None
+
 # --- Función helper para mostrar estadísticas normalizadas con barras de progreso y colores
 def mostrar_estadistica_normalizada(st, label: str, valor: float, es_inverso: bool = False):
     """Muestra una estadística normalizada con barra de progreso y colores según umbrales.
@@ -552,317 +1029,421 @@ col_left, col_right = st.columns([1, 1])
 # COLUMNA IZQUIERDA: PREDICCIÓN DE PARTIDOS
 # ============================================
 with col_left:
-    st.subheader("Predicción de Partidos")
-    st.markdown("Selecciona la temporada, subtemporada y equipos para predecir el resultado")
+    # Crear tabs
+    tab1, tab2 = st.tabs(["Predecir", "Análisis"])
+    
+    with tab1:
+        st.subheader("Predicción de Partidos")
+        st.markdown("Selecciona la temporada, subtemporada y equipos para predecir el resultado")
 
-    # Paso 1: Seleccionar Temporada (solo 2024 o posteriores, ya que 2015-2023 se usaron para entrenar)
-    seasons_todas = sorted(df_data['season'].unique(), reverse=True)
-    seasons_disponibles = [s for s in seasons_todas if s >= 2024]
+        # Paso 1: Seleccionar Temporada (solo 2024 o posteriores, ya que 2015-2023 se usaron para entrenar)
+        seasons_todas = sorted(df_data['season'].unique(), reverse=True)
+        seasons_disponibles = [s for s in seasons_todas if s >= 2024]
 
-    if not seasons_disponibles:
-        st.warning("⚠️ No hay temporadas disponibles para predicción (2024 o posteriores). El modelo se entrenó con datos de 2015-2023.")
-        st.stop()
+        if not seasons_disponibles:
+            st.warning("⚠️ No hay temporadas disponibles para predicción (2024 o posteriores). El modelo se entrenó con datos de 2015-2023.")
+            st.stop()
 
-    season = st.selectbox("Temporada", options=seasons_disponibles, index=0)
+        season = st.selectbox("Temporada", options=seasons_disponibles, index=0)
 
-    # Paso 2: Seleccionar Subtemporada basada en la temporada
-    subseasons_disponibles = sorted(df_data[df_data['season'] == season]['sub_season'].unique())
-    if not subseasons_disponibles:
-        st.error(f"No hay subtemporadas disponibles para la temporada {season}")
-        st.stop()
+        # Paso 2: Seleccionar Subtemporada basada en la temporada
+        subseasons_disponibles = sorted(df_data[df_data['season'] == season]['sub_season'].unique())
+        if not subseasons_disponibles:
+            st.error(f"No hay subtemporadas disponibles para la temporada {season}")
+            st.stop()
 
-    sub_season = st.selectbox("Subtemporada", options=subseasons_disponibles, index=len(subseasons_disponibles)-1)
+        sub_season = st.selectbox("Subtemporada", options=subseasons_disponibles, index=len(subseasons_disponibles)-1)
 
-    # Obtener equipos que jugaron en esa season/sub_season
-    df_subseason = df_data[(df_data['season'] == season) & (df_data['sub_season'] == sub_season)]
-    equipos_local = sorted(df_subseason['Equipo_local'].unique())
-    equipos_visitante = sorted(df_subseason['Equipo_visitante'].unique())
-    equipos_disponibles = sorted(set(equipos_local + equipos_visitante))
+        # Obtener equipos que jugaron en esa season/sub_season
+        df_subseason = df_data[(df_data['season'] == season) & (df_data['sub_season'] == sub_season)]
+        equipos_local = sorted(df_subseason['Equipo_local'].unique())
+        equipos_visitante = sorted(df_subseason['Equipo_visitante'].unique())
+        equipos_disponibles = sorted(set(equipos_local + equipos_visitante))
 
-    if not equipos_disponibles:
-        st.error(f"No hay equipos disponibles para la temporada {season} subtemporada {sub_season}")
-        st.stop()
+        if not equipos_disponibles:
+            st.error(f"No hay equipos disponibles para la temporada {season} subtemporada {sub_season}")
+            st.stop()
 
-    # Obtener rango de fechas de la subseason (solo desde 2024-01-01 en adelante)
-    fecha_limite_entrenamiento = pd.Timestamp('2024-01-01').date()
-    fechas_subseason = df_subseason['fecha_del_partido'].dropna()
-    if not fechas_subseason.empty:
-        fecha_min_data = fechas_subseason.min().date()
-        # Asegurar que la fecha mínima sea desde 2024
-        fecha_min = max(fecha_min_data, fecha_limite_entrenamiento)
-    else:
-        fecha_min = fecha_limite_entrenamiento
-
-    # Ajustar fecha al año de la temporada seleccionada
-    if 'last_season' not in st.session_state or st.session_state.last_season != season:
-        hoy = pd.Timestamp.now().date()
-        fecha_default = pd.Timestamp(year=season, month=hoy.month, day=min(hoy.day, 28)).date()
-        fecha_default = max(fecha_default, fecha_min)
-        st.session_state.last_season = season
-    else:
-        fecha_default = st.session_state.get('fecha_partido', max(pd.Timestamp.now().date(), fecha_min))
-
-    # Paso 3: Seleccionar fecha
-    fecha_partido = st.date_input("Fecha del partido", value=fecha_default, min_value=fecha_min)
-    st.session_state.fecha_partido = fecha_partido
-
-    # Paso 4: Seleccionar equipos
-    subseason_key = f"{season}_{sub_season}"
-    if 'last_subseason_key' not in st.session_state or st.session_state.last_subseason_key != subseason_key:
-        st.session_state.last_subseason_key = subseason_key
-        st.session_state.equipo_local = equipos_disponibles[0]
-        st.session_state.equipo_visitante = equipos_disponibles[1] if len(equipos_disponibles) > 1 else equipos_disponibles[0]
-
-    col1, col2, col3 = st.columns([2.5, 0.5, 2.5])
-
-    with col1:
-        st.write("Equipo Local")
-        equipo_local = st.selectbox("", equipos_disponibles, 
-                                   index=equipos_disponibles.index(st.session_state.equipo_local) if st.session_state.equipo_local in equipos_disponibles else 0,
-                                   key="select_local", label_visibility="collapsed")
-        st.session_state.equipo_local = equipo_local
-        # Mostrar imagen sin columnas anidadas
-        if equipo_local in team_urls:
-            st.image(team_urls[equipo_local], width=40)
-
-    with col2:
-        st.write("")
-        st.write("")
-        if st.button("⇄", key="switch_teams", use_container_width=True, help="Intercambiar equipos"):
-            st.session_state.equipo_local, st.session_state.equipo_visitante = st.session_state.equipo_visitante, st.session_state.equipo_local
-            st.rerun()
-
-    with col3:
-        st.write("Equipo Visitante")
-        equipo_visitante = st.selectbox("", equipos_disponibles,
-                                       index=equipos_disponibles.index(st.session_state.equipo_visitante) if st.session_state.equipo_visitante in equipos_disponibles else 0,
-                                       key="select_visitante", label_visibility="collapsed")
-        st.session_state.equipo_visitante = equipo_visitante
-        # Mostrar imagen sin columnas anidadas
-        if equipo_visitante in team_urls:
-            st.image(team_urls[equipo_visitante], width=40)
-
-
-    if st.button("Predecir Resultado", type="primary", use_container_width=True, key="predict_button_left"):
-        if equipo_local == equipo_visitante:
-            st.error("Por favor selecciona dos equipos diferentes")
+        # Obtener rango de fechas de la subseason (solo desde 2024-01-01 en adelante)
+        fecha_limite_entrenamiento = pd.Timestamp('2024-01-01').date()
+        fechas_subseason = df_subseason['fecha_del_partido'].dropna()
+        if not fechas_subseason.empty:
+            fecha_min_data = fechas_subseason.min().date()
+            # Asegurar que la fecha mínima sea desde 2024
+            fecha_min = max(fecha_min_data, fecha_limite_entrenamiento)
         else:
-            # Validar que la fecha sea desde 2024 en adelante
-            if fecha_partido < pd.Timestamp('2024-01-01').date():
-                st.error("❌ No se pueden predecir partidos anteriores a 2024, ya que esos datos se usaron para entrenar el modelo.")
-                st.stop()
-            
-            fecha_actual = pd.to_datetime(fecha_partido, utc=True)
-            
-            # Buscar último partido del equipo local como local en la subseason actual (antes de la fecha seleccionada)
-            df_local = df_data[(df_data['Equipo_local'] == equipo_local) & 
-                          (df_data['season'] == season) & 
-                          (df_data['sub_season'] == sub_season) &
-                              (df_data['fecha_del_partido'] <= fecha_actual)]
-            
-            # Si no hay en la subseason actual, buscar el último partido sin importar subseason (>= 2024 y antes de la fecha)
-            if df_local.empty:
+            fecha_min = fecha_limite_entrenamiento
+
+        # Ajustar fecha al año de la temporada seleccionada
+        if 'last_season' not in st.session_state or st.session_state.last_season != season:
+            hoy = pd.Timestamp.now().date()
+            fecha_default = pd.Timestamp(year=season, month=hoy.month, day=min(hoy.day, 28)).date()
+            fecha_default = max(fecha_default, fecha_min)
+            st.session_state.last_season = season
+        else:
+            fecha_default = st.session_state.get('fecha_partido', max(pd.Timestamp.now().date(), fecha_min))
+
+        # Paso 3: Seleccionar fecha
+        fecha_partido = st.date_input("Fecha del partido", value=fecha_default, min_value=fecha_min)
+        st.session_state.fecha_partido = fecha_partido
+
+        # Paso 4: Seleccionar equipos
+        subseason_key = f"{season}_{sub_season}"
+        if 'last_subseason_key' not in st.session_state or st.session_state.last_subseason_key != subseason_key:
+            st.session_state.last_subseason_key = subseason_key
+            st.session_state.equipo_local = equipos_disponibles[0]
+            st.session_state.equipo_visitante = equipos_disponibles[1] if len(equipos_disponibles) > 1 else equipos_disponibles[0]
+
+        col1, col2, col3 = st.columns([2.5, 0.5, 2.5])
+
+        with col1:
+            st.write("Equipo Local")
+            equipo_local = st.selectbox("", equipos_disponibles, 
+                                       index=equipos_disponibles.index(st.session_state.equipo_local) if st.session_state.equipo_local in equipos_disponibles else 0,
+                                       key="select_local", label_visibility="collapsed")
+            st.session_state.equipo_local = equipo_local
+            # Mostrar imagen sin columnas anidadas
+            if equipo_local in team_urls:
+                st.image(team_urls[equipo_local], width=40)
+
+        with col2:
+            st.write("")
+            st.write("")
+            if st.button("⇄", key="switch_teams", use_container_width=True, help="Intercambiar equipos"):
+                st.session_state.equipo_local, st.session_state.equipo_visitante = st.session_state.equipo_visitante, st.session_state.equipo_local
+                st.rerun()
+
+        with col3:
+            st.write("Equipo Visitante")
+            equipo_visitante = st.selectbox("", equipos_disponibles,
+                                           index=equipos_disponibles.index(st.session_state.equipo_visitante) if st.session_state.equipo_visitante in equipos_disponibles else 0,
+                                           key="select_visitante", label_visibility="collapsed")
+            st.session_state.equipo_visitante = equipo_visitante
+            # Mostrar imagen sin columnas anidadas
+            if equipo_visitante in team_urls:
+                st.image(team_urls[equipo_visitante], width=40)
+
+
+        if st.button("Predecir Resultado", type="primary", use_container_width=True, key="predict_button_left"):
+            if equipo_local == equipo_visitante:
+                st.error("Por favor selecciona dos equipos diferentes")
+            else:
+                # Validar que la fecha sea desde 2024 en adelante
+                if fecha_partido < pd.Timestamp('2024-01-01').date():
+                    st.error("❌ No se pueden predecir partidos anteriores a 2024, ya que esos datos se usaron para entrenar el modelo.")
+                    st.stop()
+                
+                fecha_actual = pd.to_datetime(fecha_partido, utc=True)
+                
+                # Buscar último partido del equipo local como local en la subseason actual (antes de la fecha seleccionada)
                 df_local = df_data[(df_data['Equipo_local'] == equipo_local) & 
-                                  (df_data['season'] >= 2024) &
-                                  (df_data['fecha_del_partido'] <= fecha_actual)]
-            
-            df_local = df_local.sort_values('fecha_del_partido', ascending=False)
-            
-            # Buscar último partido del equipo visitante como visitante en la subseason actual (antes de la fecha seleccionada)
-            df_visitante = df_data[(df_data['Equipo_visitante'] == equipo_visitante) & 
                                   (df_data['season'] == season) & 
                                   (df_data['sub_season'] == sub_season) &
                                   (df_data['fecha_del_partido'] <= fecha_actual)]
-            
-            # Si no hay en la subseason actual, buscar el último partido sin importar subseason (>= 2024 y antes de la fecha)
-            if df_visitante.empty:
-                df_visitante = df_data[(df_data['Equipo_visitante'] == equipo_visitante) & 
+                
+                # Si no hay en la subseason actual, buscar el último partido sin importar subseason (>= 2024 y antes de la fecha)
+                if df_local.empty:
+                    df_local = df_data[(df_data['Equipo_local'] == equipo_local) & 
                                       (df_data['season'] >= 2024) &
                                       (df_data['fecha_del_partido'] <= fecha_actual)]
-            
-            df_visitante = df_visitante.sort_values('fecha_del_partido', ascending=False)
-            
-            # Validar que ambos equipos tengan datos
-            if df_local.empty:
-                st.error(f"❌ No se encontraron partidos previos para {equipo_local} como local.")
-                st.stop()
-            
-            if df_visitante.empty:
-                st.error(f"❌ No se encontraron partidos previos para {equipo_visitante} como visitante.")
-                st.stop()
-            
-            # Informar si se usaron datos de otra subseason o temporada
-            partido_local_found = df_local.iloc[0]
-            partido_visitante_found = df_visitante.iloc[0]
-            
-            if partido_local_found['season'] != season or partido_local_found['sub_season'] != sub_season:
-                st.info(f"ℹ️ Se usaron datos de {equipo_local} de la temporada {partido_local_found['season']} subtemporada {partido_local_found['sub_season']} (no se encontraron datos en {season}-{sub_season})")
-            
-            if partido_visitante_found['season'] != season or partido_visitante_found['sub_season'] != sub_season:
-                st.info(f"ℹ️ Se usaron datos de {equipo_visitante} de la temporada {partido_visitante_found['season']} subtemporada {partido_visitante_found['sub_season']} (no se encontraron datos en {season}-{sub_season})")
-            
-            # Construir valores usando los últimos partidos encontrados (con valores normalizados)
-            def get_val(series, col, default):
-                return series[col] if col in series and pd.notna(series[col]) else default
-            
-            partido_local = partido_local_found
-            partido_visitante = partido_visitante_found
-            
-            default_values = {
-                'fecha_del_partido': fecha_actual,
-                'season': season,
-                'sub_season': sub_season,
-                'fixture_id': 0,
-                'round': get_val(partido_local, 'round', 'Regular Season - 1'),
-                'Equipo_local_id': get_val(partido_local, 'Equipo_local_id', 0),
-                'Equipo_local': equipo_local,
-                'Equipo_visitante_id': get_val(partido_visitante, 'Equipo_visitante_id', 0),
-                'Equipo_visitante': equipo_visitante,
-                'Partidos_jugados_local_previos': get_val(partido_local, 'Partidos_jugados_local_previos', 0),
-                'Partidos_jugados_visitante_previos': get_val(partido_visitante, 'Partidos_jugados_visitante_previos', 0),
-                'Forma_local_ultimos5': get_val(partido_local, 'Forma_local_ultimos5', ''),
-                'Forma_visitante_ultimos5': get_val(partido_visitante, 'Forma_visitante_ultimos5', ''),
-                'Forma_local_puntos_ultimos5': get_val(partido_local, 'Forma_local_puntos_ultimos5', 7),
-                'Forma_visitante_puntos_ultimos5': get_val(partido_visitante, 'Forma_visitante_puntos_ultimos5', 7),
-                'Victorias_local_en_casa_tasa_normalizada': get_val(partido_local, 'Victorias_local_en_casa_tasa_normalizada', 0.5),
-                'Victorias_visitante_fuera_tasa_normalizada': get_val(partido_visitante, 'Victorias_visitante_fuera_tasa_normalizada', 0.5),
-                'Empates_local_en_casa_tasa_normalizada': get_val(partido_local, 'Empates_local_en_casa_tasa_normalizada', 0.5),
-                'Empates_visitante_fuera_tasa_normalizada': get_val(partido_visitante, 'Empates_visitante_fuera_tasa_normalizada', 0.5),
-                'Derrotas_local_en_casa_tasa_normalizada': get_val(partido_local, 'Derrotas_local_en_casa_tasa_normalizada', 0.5),
-                'Derrotas_visitante_fuera_tasa_normalizada': get_val(partido_visitante, 'Derrotas_visitante_fuera_tasa_normalizada', 0.5),
-                'Promedio_Goles_marcados_totales_local_normalizado': get_val(partido_local, 'Promedio_Goles_marcados_totales_local_normalizado', 0.5),
-                'Promedio_Goles_marcados_totales_visitante_normalizado': get_val(partido_visitante, 'Promedio_Goles_marcados_totales_visitante_normalizado', 0.5),
-                'Promedio_Goles_recibidos_totales_local_normalizado': get_val(partido_local, 'Promedio_Goles_recibidos_totales_local_normalizado', 0.5),
-                'Promedio_Goles_recibidos_totales_visitante_normalizado': get_val(partido_visitante, 'Promedio_Goles_recibidos_totales_visitante_normalizado', 0.5),
-                'Promedio_Goles_marcados_local_en_casa_normalizado': get_val(partido_local, 'Promedio_Goles_marcados_local_en_casa_normalizado', 0.5),
-                'Promedio_Goles_marcados_visitante_fuera_normalizado': get_val(partido_visitante, 'Promedio_Goles_marcados_visitante_fuera_normalizado', 0.5),
-                'Promedio_Goles_recibidos_local_en_casa_normalizado': get_val(partido_local, 'Promedio_Goles_recibidos_local_en_casa_normalizado', 0.5),
-                'Promedio_Goles_recibidos_visitante_fuera_normalizado': get_val(partido_visitante, 'Promedio_Goles_recibidos_visitante_fuera_normalizado', 0.5),
-                'Valla_invicta_local_tasa_normalizada': get_val(partido_local, 'Valla_invicta_local_tasa_normalizada', 0.5),
-                'Valla_invicta_visitante_tasa_normalizada': get_val(partido_visitante, 'Valla_invicta_visitante_tasa_normalizada', 0.5),
-                'Promedio_Diferencia_gol_total_local_normalizado': get_val(partido_local, 'Promedio_Diferencia_gol_total_local_normalizado', 0.0),
-                'Promedio_Diferencia_gol_total_visitante_normalizado': get_val(partido_visitante, 'Promedio_Diferencia_gol_total_visitante_normalizado', 0.0),
-                'Promedio_Puntuacion_total_local_normalizado': get_val(partido_local, 'Promedio_Puntuacion_total_local_normalizado', 0.5),
-                'Promedio_Puntuacion_total_visitante_normalizado': get_val(partido_visitante, 'Promedio_Puntuacion_total_visitante_normalizado', 0.5),
-                'local_team_value': get_val(partido_local, 'local_team_value', 0.0),
-                'visitante_team_value': get_val(partido_visitante, 'visitante_team_value', 0.0),
-                'local_team_url': team_urls.get(equipo_local, ''),
-                'visitante_team_url': team_urls.get(equipo_visitante, ''),
-                'local_team_value_normalized': get_val(partido_local, 'local_team_value_normalized', 0.5),
-                'visitante_team_value_normalized': get_val(partido_visitante, 'visitante_team_value_normalized', 0.5),
-            }
-            
-            df_pred = pd.DataFrame([default_values])
-            
-            # Generar features temporales como en el entrenamiento
-            df_pred['fecha_del_partido'] = pd.to_datetime(df_pred['fecha_del_partido'], errors='coerce', utc=True)
-            df_pred['partido_anio'] = df_pred['fecha_del_partido'].dt.year
-            df_pred['partido_mes'] = df_pred['fecha_del_partido'].dt.month
-            df_pred['partido_dia_semana'] = df_pred['fecha_del_partido'].dt.dayofweek
+                
+                df_local = df_local.sort_values('fecha_del_partido', ascending=False)
+                
+                # Buscar último partido del equipo visitante como visitante en la subseason actual (antes de la fecha seleccionada)
+                df_visitante = df_data[(df_data['Equipo_visitante'] == equipo_visitante) & 
+                                      (df_data['season'] == season) & 
+                                      (df_data['sub_season'] == sub_season) &
+                                      (df_data['fecha_del_partido'] <= fecha_actual)]
+                
+                # Si no hay en la subseason actual, buscar el último partido sin importar subseason (>= 2024 y antes de la fecha)
+                if df_visitante.empty:
+                    df_visitante = df_data[(df_data['Equipo_visitante'] == equipo_visitante) & 
+                                          (df_data['season'] >= 2024) &
+                                          (df_data['fecha_del_partido'] <= fecha_actual)]
+                
+                df_visitante = df_visitante.sort_values('fecha_del_partido', ascending=False)
+                
+                # Validar que ambos equipos tengan datos
+                if df_local.empty:
+                    st.error(f"❌ No se encontraron partidos previos para {equipo_local} como local.")
+                    st.stop()
+                
+                if df_visitante.empty:
+                    st.error(f"❌ No se encontraron partidos previos para {equipo_visitante} como visitante.")
+                    st.stop()
+                
+                # Informar si se usaron datos de otra subseason o temporada
+                partido_local_found = df_local.iloc[0]
+                partido_visitante_found = df_visitante.iloc[0]
+                
+                if partido_local_found['season'] != season or partido_local_found['sub_season'] != sub_season:
+                    st.info(f"ℹ️ Se usaron datos de {equipo_local} de la temporada {partido_local_found['season']} subtemporada {partido_local_found['sub_season']} (no se encontraron datos en {season}-{sub_season})")
+                
+                if partido_visitante_found['season'] != season or partido_visitante_found['sub_season'] != sub_season:
+                    st.info(f"ℹ️ Se usaron datos de {equipo_visitante} de la temporada {partido_visitante_found['season']} subtemporada {partido_visitante_found['sub_season']} (no se encontraron datos en {season}-{sub_season})")
+                
+                # Construir valores usando los últimos partidos encontrados (con valores normalizados)
+                def get_val(series, col, default):
+                    return series[col] if col in series and pd.notna(series[col]) else default
+                
+                partido_local = partido_local_found
+                partido_visitante = partido_visitante_found
+                
+                default_values = {
+                    'fecha_del_partido': fecha_actual,
+                    'season': season,
+                    'sub_season': sub_season,
+                    'fixture_id': 0,
+                    'round': get_val(partido_local, 'round', 'Regular Season - 1'),
+                    'Equipo_local_id': get_val(partido_local, 'Equipo_local_id', 0),
+                    'Equipo_local': equipo_local,
+                    'Equipo_visitante_id': get_val(partido_visitante, 'Equipo_visitante_id', 0),
+                    'Equipo_visitante': equipo_visitante,
+                    'Partidos_jugados_local_previos': get_val(partido_local, 'Partidos_jugados_local_previos', 0),
+                    'Partidos_jugados_visitante_previos': get_val(partido_visitante, 'Partidos_jugados_visitante_previos', 0),
+                    'Forma_local_ultimos5': get_val(partido_local, 'Forma_local_ultimos5', ''),
+                    'Forma_visitante_ultimos5': get_val(partido_visitante, 'Forma_visitante_ultimos5', ''),
+                    'Forma_local_puntos_ultimos5': get_val(partido_local, 'Forma_local_puntos_ultimos5', 7),
+                    'Forma_visitante_puntos_ultimos5': get_val(partido_visitante, 'Forma_visitante_puntos_ultimos5', 7),
+                    'Victorias_local_en_casa_tasa_normalizada': get_val(partido_local, 'Victorias_local_en_casa_tasa_normalizada', 0.5),
+                    'Victorias_visitante_fuera_tasa_normalizada': get_val(partido_visitante, 'Victorias_visitante_fuera_tasa_normalizada', 0.5),
+                    'Empates_local_en_casa_tasa_normalizada': get_val(partido_local, 'Empates_local_en_casa_tasa_normalizada', 0.5),
+                    'Empates_visitante_fuera_tasa_normalizada': get_val(partido_visitante, 'Empates_visitante_fuera_tasa_normalizada', 0.5),
+                    'Derrotas_local_en_casa_tasa_normalizada': get_val(partido_local, 'Derrotas_local_en_casa_tasa_normalizada', 0.5),
+                    'Derrotas_visitante_fuera_tasa_normalizada': get_val(partido_visitante, 'Derrotas_visitante_fuera_tasa_normalizada', 0.5),
+                    'Promedio_Goles_marcados_totales_local_normalizado': get_val(partido_local, 'Promedio_Goles_marcados_totales_local_normalizado', 0.5),
+                    'Promedio_Goles_marcados_totales_visitante_normalizado': get_val(partido_visitante, 'Promedio_Goles_marcados_totales_visitante_normalizado', 0.5),
+                    'Promedio_Goles_recibidos_totales_local_normalizado': get_val(partido_local, 'Promedio_Goles_recibidos_totales_local_normalizado', 0.5),
+                    'Promedio_Goles_recibidos_totales_visitante_normalizado': get_val(partido_visitante, 'Promedio_Goles_recibidos_totales_visitante_normalizado', 0.5),
+                    'Promedio_Goles_marcados_local_en_casa_normalizado': get_val(partido_local, 'Promedio_Goles_marcados_local_en_casa_normalizado', 0.5),
+                    'Promedio_Goles_marcados_visitante_fuera_normalizado': get_val(partido_visitante, 'Promedio_Goles_marcados_visitante_fuera_normalizado', 0.5),
+                    'Promedio_Goles_recibidos_local_en_casa_normalizado': get_val(partido_local, 'Promedio_Goles_recibidos_local_en_casa_normalizado', 0.5),
+                    'Promedio_Goles_recibidos_visitante_fuera_normalizado': get_val(partido_visitante, 'Promedio_Goles_recibidos_visitante_fuera_normalizado', 0.5),
+                    'Valla_invicta_local_tasa_normalizada': get_val(partido_local, 'Valla_invicta_local_tasa_normalizada', 0.5),
+                    'Valla_invicta_visitante_tasa_normalizada': get_val(partido_visitante, 'Valla_invicta_visitante_tasa_normalizada', 0.5),
+                    'Promedio_Diferencia_gol_total_local_normalizado': get_val(partido_local, 'Promedio_Diferencia_gol_total_local_normalizado', 0.0),
+                    'Promedio_Diferencia_gol_total_visitante_normalizado': get_val(partido_visitante, 'Promedio_Diferencia_gol_total_visitante_normalizado', 0.0),
+                    'Promedio_Puntuacion_total_local_normalizado': get_val(partido_local, 'Promedio_Puntuacion_total_local_normalizado', 0.5),
+                    'Promedio_Puntuacion_total_visitante_normalizado': get_val(partido_visitante, 'Promedio_Puntuacion_total_visitante_normalizado', 0.5),
+                    'local_team_value': get_val(partido_local, 'local_team_value', 0.0),
+                    'visitante_team_value': get_val(partido_visitante, 'visitante_team_value', 0.0),
+                    'local_team_url': team_urls.get(equipo_local, ''),
+                    'visitante_team_url': team_urls.get(equipo_visitante, ''),
+                    'local_team_value_normalized': get_val(partido_local, 'local_team_value_normalized', 0.5),
+                    'visitante_team_value_normalized': get_val(partido_visitante, 'visitante_team_value_normalized', 0.5),
+                }
+                
+                df_pred = pd.DataFrame([default_values])
+                
+                # Generar features temporales como en el entrenamiento
+                df_pred['fecha_del_partido'] = pd.to_datetime(df_pred['fecha_del_partido'], errors='coerce', utc=True)
+                df_pred['partido_anio'] = df_pred['fecha_del_partido'].dt.year
+                df_pred['partido_mes'] = df_pred['fecha_del_partido'].dt.month
+                df_pred['partido_dia_semana'] = df_pred['fecha_del_partido'].dt.dayofweek
 
-            try:
-                prediccion = model.predict(df_pred)[0]
-                probabilidades = model.predict_proba(df_pred)[0]
-                
-                st.markdown("---")
-                
-                if prediccion == "Ganador local":
-                    imagen_html = ""
-                    if equipo_local in team_urls:
-                        imagen_html = f'<img src="{team_urls[equipo_local]}" width="40" style="vertical-align: middle; margin-right: 10px;">'
-                        st.markdown(
-                            f"""
-                            <div style='margin-bottom: 20px; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 0.5rem; padding: .5rem; display: flex; justify-content: center; align-items: center; gap: .5rem;'>
-                                {imagen_html}
-                                <span><strong>{equipo_local}</strong> gana</span>
-                            </div>
-                            """,
-                        unsafe_allow_html=True
-                    )
-                elif prediccion == "Ganador visitante":
-                    imagen_html = ""
-                    if equipo_visitante in team_urls:
-                        imagen_html = f'<img src="{team_urls[equipo_visitante]}" width="40" style="vertical-align: middle; margin-right: 10px;">'
-                        st.markdown(
-                            f"""
-                            <div style='margin-bottom: 20px; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 0.5rem; padding: .5rem; display: flex; justify-content: center; align-items: center; gap: .5rem;'>
-                                {imagen_html}
-                                <span><strong>{equipo_visitante}</strong> gana</span>
-                            </div>
-                            """,
-                        unsafe_allow_html=True
-                    )
-                else:
-                    st.info(" **Empate**")
-                
-                
-                resultados_labels = model.named_steps['model'].classes_
-                prob_df = pd.DataFrame({
-                    'Resultado': resultados_labels,
-                    'Probabilidad': probabilidades
-                })
-                
-                for i, row in prob_df.iterrows():
-                    prob_pct = row['Probabilidad'] * 100
-                    st.progress(float(row['Probabilidad']), text=f"{row['Resultado']}: {prob_pct:.1f}%")
-                
-                # Desplegable con valores de entrada al modelo
-                with st.expander("Ver valores de entrada al modelo"):
-                    # Obtener fechas de los partidos usados
-                    fecha_partido_local = partido_local['fecha_del_partido'].date() if pd.notna(partido_local['fecha_del_partido']) else None
-                    fecha_partido_visitante = partido_visitante['fecha_del_partido'].date() if pd.notna(partido_visitante['fecha_del_partido']) else None
+                try:
+                    prediccion = model.predict(df_pred)[0]
+                    probabilidades = model.predict_proba(df_pred)[0]
                     
-                    col_info1, col_info2 = st.columns(2)
+                    st.markdown("---")
                     
-                    with col_info1:
-                        # Mostrar imagen del equipo local
+                    if prediccion == "Ganador local":
+                        imagen_html = ""
                         if equipo_local in team_urls:
-                            st.image(team_urls[equipo_local], width=60)
-                        st.subheader("Equipo Local")
-                        # Obtener información del partido usado para el equipo local
-                        equipo_local_partido = partido_local.get('Equipo_local', '')
-                        equipo_visitante_partido_local = partido_local.get('Equipo_visitante', '')
-                        if fecha_partido_local:
-                            st.write(f"**Equipo:** {equipo_local} vs. {equipo_visitante_partido_local}")
-                            st.write(f"**Datos del partido:** {fecha_partido_local.strftime('%d/%m/%Y')}")
-                        else:
-                            st.write(f"**Equipo:** {equipo_local}")
-                        st.write(f"**Partidos jugados:** {default_values['Partidos_jugados_local_previos']}")
-                        st.write(f"**Forma últimos 5:** {default_values['Forma_local_ultimos5']} ({default_values['Forma_local_puntos_ultimos5']} pts)")
-                        st.markdown("---")
-                        mostrar_estadistica_normalizada(st, "Victorias en casa (norm)", default_values['Victorias_local_en_casa_tasa_normalizada'])
-                        mostrar_estadistica_normalizada(st, "Goles marcados (norm)", default_values['Promedio_Goles_marcados_totales_local_normalizado'])
-                        mostrar_estadistica_normalizada(st, "Goles recibidos (norm)", default_values['Promedio_Goles_recibidos_totales_local_normalizado'], es_inverso=True)
-                        mostrar_estadistica_normalizada(st, "Valla invicta (norm)", default_values['Valla_invicta_local_tasa_normalizada'])
-                        mostrar_estadistica_normalizada(st, "Puntuación total (norm)", default_values['Promedio_Puntuacion_total_local_normalizado'])
-                        mostrar_estadistica_normalizada(st, "Valor equipo (norm)", default_values['local_team_value_normalized'])
-                    
-                    with col_info2:
-                        # Mostrar imagen del equipo visitante
+                            imagen_html = f'<img src="{team_urls[equipo_local]}" width="40" style="vertical-align: middle; margin-right: 10px;">'
+                            st.markdown(
+                                f"""
+                                <div style='margin-bottom: 20px; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 0.5rem; padding: .5rem; display: flex; justify-content: center; align-items: center; gap: .5rem;'>
+                                    {imagen_html}
+                                    <span><strong>{equipo_local}</strong> gana</span>
+                                </div>
+                                """,
+                            unsafe_allow_html=True
+                        )
+                    elif prediccion == "Ganador visitante":
+                        imagen_html = ""
                         if equipo_visitante in team_urls:
-                            st.image(team_urls[equipo_visitante], width=60)
-                        st.subheader("Equipo Visitante")
-                        # Obtener información del partido usado para el equipo visitante
-                        equipo_local_partido_visitante = partido_visitante.get('Equipo_local', '')
-                        equipo_visitante_partido = partido_visitante.get('Equipo_visitante', '')
-                        if fecha_partido_visitante:
-                            st.write(f"**Equipo:** {equipo_visitante} vs. {equipo_local_partido_visitante}")
-                            st.write(f"**Datos del partido:** {fecha_partido_visitante.strftime('%d/%m/%Y')}")
-                        else:
-                            st.write(f"**Equipo:** {equipo_visitante}")
-                        st.write(f"**Partidos jugados:** {default_values['Partidos_jugados_visitante_previos']}")
-                        st.write(f"**Forma últimos 5:** {default_values['Forma_visitante_ultimos5']} ({default_values['Forma_visitante_puntos_ultimos5']} pts)")
-                        st.markdown("---")
-                        mostrar_estadistica_normalizada(st, "Victorias fuera (norm)", default_values['Victorias_visitante_fuera_tasa_normalizada'])
-                        mostrar_estadistica_normalizada(st, "Goles marcados (norm)", default_values['Promedio_Goles_marcados_totales_visitante_normalizado'])
-                        mostrar_estadistica_normalizada(st, "Goles recibidos (norm)", default_values['Promedio_Goles_recibidos_totales_visitante_normalizado'], es_inverso=True)
-                        mostrar_estadistica_normalizada(st, "Valla invicta (norm)", default_values['Valla_invicta_visitante_tasa_normalizada'])
-                        mostrar_estadistica_normalizada(st, "Puntuación total (norm)", default_values['Promedio_Puntuacion_total_visitante_normalizado'])
-                        mostrar_estadistica_normalizada(st, "Valor equipo (norm)", default_values['visitante_team_value_normalized'])
+                            imagen_html = f'<img src="{team_urls[equipo_visitante]}" width="40" style="vertical-align: middle; margin-right: 10px;">'
+                            st.markdown(
+                                f"""
+                                <div style='margin-bottom: 20px; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 0.5rem; padding: .5rem; display: flex; justify-content: center; align-items: center; gap: .5rem;'>
+                                    {imagen_html}
+                                    <span><strong>{equipo_visitante}</strong> gana</span>
+                                </div>
+                                """,
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.info(" **Empate**")
+                    
+                    
+                    resultados_labels = model.named_steps['model'].classes_
+                    prob_df = pd.DataFrame({
+                        'Resultado': resultados_labels,
+                        'Probabilidad': probabilidades
+                    })
+                    
+                    for i, row in prob_df.iterrows():
+                        prob_pct = row['Probabilidad'] * 100
+                        st.progress(float(row['Probabilidad']), text=f"{row['Resultado']}: {prob_pct:.1f}%")
+                    
+                    # Desplegable con valores de entrada al modelo
+                    with st.expander("Ver valores de entrada al modelo"):
+                        # Obtener fechas de los partidos usados
+                        fecha_partido_local = partido_local['fecha_del_partido'].date() if pd.notna(partido_local['fecha_del_partido']) else None
+                        fecha_partido_visitante = partido_visitante['fecha_del_partido'].date() if pd.notna(partido_visitante['fecha_del_partido']) else None
+                        
+                        col_info1, col_info2 = st.columns(2)
+                        
+                        with col_info1:
+                            # Mostrar imagen del equipo local
+                            if equipo_local in team_urls:
+                                st.image(team_urls[equipo_local], width=60)
+                            st.subheader("Equipo Local")
+                            # Obtener información del partido usado para el equipo local
+                            equipo_local_partido = partido_local.get('Equipo_local', '')
+                            equipo_visitante_partido_local = partido_local.get('Equipo_visitante', '')
+                            if fecha_partido_local:
+                                st.write(f"**Equipo:** {equipo_local} vs. {equipo_visitante_partido_local}")
+                                st.write(f"**Datos del partido:** {fecha_partido_local.strftime('%d/%m/%Y')}")
+                            else:
+                                st.write(f"**Equipo:** {equipo_local}")
+                            st.write(f"**Partidos jugados:** {default_values['Partidos_jugados_local_previos']}")
+                            st.write(f"**Forma últimos 5:** {default_values['Forma_local_ultimos5']} ({default_values['Forma_local_puntos_ultimos5']} pts)")
+                            st.markdown("---")
+                            mostrar_estadistica_normalizada(st, "Victorias en casa (norm)", default_values['Victorias_local_en_casa_tasa_normalizada'])
+                            mostrar_estadistica_normalizada(st, "Goles marcados (norm)", default_values['Promedio_Goles_marcados_totales_local_normalizado'])
+                            mostrar_estadistica_normalizada(st, "Goles recibidos (norm)", default_values['Promedio_Goles_recibidos_totales_local_normalizado'], es_inverso=True)
+                            mostrar_estadistica_normalizada(st, "Valla invicta (norm)", default_values['Valla_invicta_local_tasa_normalizada'])
+                            mostrar_estadistica_normalizada(st, "Puntuación total (norm)", default_values['Promedio_Puntuacion_total_local_normalizado'])
+                            mostrar_estadistica_normalizada(st, "Valor equipo (norm)", default_values['local_team_value_normalized'])
+                        
+                        with col_info2:
+                            # Mostrar imagen del equipo visitante
+                            if equipo_visitante in team_urls:
+                                st.image(team_urls[equipo_visitante], width=60)
+                            st.subheader("Equipo Visitante")
+                            # Obtener información del partido usado para el equipo visitante
+                            equipo_local_partido_visitante = partido_visitante.get('Equipo_local', '')
+                            equipo_visitante_partido = partido_visitante.get('Equipo_visitante', '')
+                            if fecha_partido_visitante:
+                                st.write(f"**Equipo:** {equipo_visitante} vs. {equipo_local_partido_visitante}")
+                                st.write(f"**Datos del partido:** {fecha_partido_visitante.strftime('%d/%m/%Y')}")
+                            else:
+                                st.write(f"**Equipo:** {equipo_visitante}")
+                            st.write(f"**Partidos jugados:** {default_values['Partidos_jugados_visitante_previos']}")
+                            st.write(f"**Forma últimos 5:** {default_values['Forma_visitante_ultimos5']} ({default_values['Forma_visitante_puntos_ultimos5']} pts)")
+                            st.markdown("---")
+                            mostrar_estadistica_normalizada(st, "Victorias fuera (norm)", default_values['Victorias_visitante_fuera_tasa_normalizada'])
+                            mostrar_estadistica_normalizada(st, "Goles marcados (norm)", default_values['Promedio_Goles_marcados_totales_visitante_normalizado'])
+                            mostrar_estadistica_normalizada(st, "Goles recibidos (norm)", default_values['Promedio_Goles_recibidos_totales_visitante_normalizado'], es_inverso=True)
+                            mostrar_estadistica_normalizada(st, "Valla invicta (norm)", default_values['Valla_invicta_visitante_tasa_normalizada'])
+                            mostrar_estadistica_normalizada(st, "Puntuación total (norm)", default_values['Promedio_Puntuacion_total_visitante_normalizado'])
+                            mostrar_estadistica_normalizada(st, "Valor equipo (norm)", default_values['visitante_team_value_normalized'])
+                    
+                except Exception as e:
+                    st.error(f"Error al hacer la predicción: {str(e)}")
+                    st.exception(e)
+    
+    with tab2:
+        st.subheader("Análisis de Equipos")
+        
+        # Sub-tabs dentro del tab Análisis
+        sub_tab1, sub_tab2, sub_tab3 = st.tabs(["Gráfico Radar", "Comparación de Forma", "Valor vs Rendimiento"])
+        
+        with sub_tab1:
+            st.markdown("Compara estadísticas de diferentes equipos usando el gráfico radar")
+            
+            # Gráfico radar de comparación de equipos
+            radar_chart = crear_grafico_radar_equipos(df_data)
+            if radar_chart is not None:
+                st.altair_chart(radar_chart, use_container_width=True)
+            else:
+                st.info("No se pudo generar el gráfico de comparación. Verifica que los datos estén disponibles.")
+        
+        with sub_tab2:
+            st.markdown("Compara la forma reciente (últimos 5 partidos) entre dos equipos")
+            
+            # Preparar datos
+            forma_combined, equipos_disponibles, fechas_disponibles = preparar_datos_forma(df_data)
+            
+            if forma_combined is not None and len(equipos_disponibles) > 0 and len(fechas_disponibles) > 0:
+                # Valores por defecto
+                equipo1_default = equipos_disponibles[0]
+                equipo2_default = equipos_disponibles[1] if len(equipos_disponibles) > 1 else equipos_disponibles[0]
+                fecha_default = fechas_disponibles[-1]
                 
-            except Exception as e:
-                st.error(f"Error al hacer la predicción: {str(e)}")
-                st.exception(e)
+                # Selectores
+                col_forma1, col_forma2, col_forma3 = st.columns(3)
+                
+                with col_forma1:
+                    equipo1 = st.selectbox(
+                        "Equipo 1",
+                        options=equipos_disponibles,
+                        index=equipos_disponibles.index(equipo1_default) if equipo1_default in equipos_disponibles else 0,
+                        key="forma_equipo1"
+                    )
+                
+                with col_forma2:
+                    equipo2 = st.selectbox(
+                        "Equipo 2",
+                        options=equipos_disponibles,
+                        index=equipos_disponibles.index(equipo2_default) if equipo2_default in equipos_disponibles else 0,
+                        key="forma_equipo2"
+                    )
+                
+                with col_forma3:
+                    # Mostrar solo las últimas 100 fechas para no sobrecargar el selector
+                    fechas_recientes = fechas_disponibles[-100:] if len(fechas_disponibles) > 100 else fechas_disponibles
+                    fecha_seleccionada = st.selectbox(
+                        "Fecha",
+                        options=fechas_recientes,
+                        index=len(fechas_recientes) - 1,
+                        key="forma_fecha"
+                    )
+                
+                # Generar gráfico
+                if st.button("Generar Comparación", type="primary", key="generar_comparacion_forma"):
+                    fig, puntos_eq1, puntos_eq2, forma_eq1, forma_eq2 = crear_grafico_comparacion_forma(
+                        df_data, equipo1, equipo2, fecha_seleccionada
+                    )
+                    
+                    if fig is not None:
+                        st.pyplot(fig)
+                        
+                        # Mostrar estadísticas adicionales
+                        st.markdown("---")
+                        st.markdown("### Estadísticas Detalladas")
+                        col_stat1, col_stat2 = st.columns(2)
+                        
+                        with col_stat1:
+                            st.markdown(f"**{equipo1}**")
+                            st.write(f"Puntos: **{int(puntos_eq1)}** puntos")
+                            st.write(f"Racha: **{forma_eq1}**")
+                        
+                        with col_stat2:
+                            st.markdown(f"**{equipo2}**")
+                            st.write(f"Puntos: **{int(puntos_eq2)}** puntos")
+                            st.write(f"Racha: **{forma_eq2}**")
+                        
+                        diferencia = abs(puntos_eq1 - puntos_eq2)
+                        mejor = equipo1 if puntos_eq1 > puntos_eq2 else equipo2
+                        if puntos_eq1 == puntos_eq2:
+                            st.info("Ambos equipos tienen la misma forma reciente")
+                        else:
+                            st.success(f"**{mejor}** tiene mejor forma reciente (+{int(diferencia)} puntos)")
+            else:
+                st.warning("No se pudieron cargar los datos de forma reciente. Verifica que los datos estén disponibles.")
+        
+        with sub_tab3:
+            st.markdown("Analiza la relación entre el valor de mercado de los equipos y su rendimiento en victorias")
+            
+            # Gráfico de relación entre valor de mercado y rendimiento
+            valor_rendimiento_chart = crear_grafico_valor_rendimiento(df_data)
+            if valor_rendimiento_chart is not None:
+                st.altair_chart(valor_rendimiento_chart, use_container_width=True)
+            else:
+                st.info("No se pudo generar el gráfico de valor vs rendimiento. Verifica que los datos estén disponibles.")
 
 # ============================================
 # COLUMNA DERECHA: SIMULADOR DE APUESTAS
