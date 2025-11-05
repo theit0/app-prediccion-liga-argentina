@@ -793,7 +793,7 @@ with col_left:
                         unsafe_allow_html=True
                     )
                 else:
-                    st.info("🤝 **Empate**")
+                    st.info(" **Empate**")
                 
                 
                 resultados_labels = model.named_steps['model'].classes_
@@ -834,6 +834,7 @@ with col_left:
                         mostrar_estadistica_normalizada(st, "Goles marcados (norm)", default_values['Promedio_Goles_marcados_totales_local_normalizado'])
                         mostrar_estadistica_normalizada(st, "Goles recibidos (norm)", default_values['Promedio_Goles_recibidos_totales_local_normalizado'], es_inverso=True)
                         mostrar_estadistica_normalizada(st, "Valla invicta (norm)", default_values['Valla_invicta_local_tasa_normalizada'])
+                        mostrar_estadistica_normalizada(st, "Puntuación total (norm)", default_values['Promedio_Puntuacion_total_local_normalizado'])
                         mostrar_estadistica_normalizada(st, "Valor equipo (norm)", default_values['local_team_value_normalized'])
                     
                     with col_info2:
@@ -856,6 +857,7 @@ with col_left:
                         mostrar_estadistica_normalizada(st, "Goles marcados (norm)", default_values['Promedio_Goles_marcados_totales_visitante_normalizado'])
                         mostrar_estadistica_normalizada(st, "Goles recibidos (norm)", default_values['Promedio_Goles_recibidos_totales_visitante_normalizado'], es_inverso=True)
                         mostrar_estadistica_normalizada(st, "Valla invicta (norm)", default_values['Valla_invicta_visitante_tasa_normalizada'])
+                        mostrar_estadistica_normalizada(st, "Puntuación total (norm)", default_values['Promedio_Puntuacion_total_visitante_normalizado'])
                         mostrar_estadistica_normalizada(st, "Valor equipo (norm)", default_values['visitante_team_value_normalized'])
                 
             except Exception as e:
