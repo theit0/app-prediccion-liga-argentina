@@ -1007,143 +1007,162 @@ with col_right:
                 if not model_selection:
                     st.warning("Selecciona al menos un modelo para continuar.")
                 else:
-                    start_date, end_date = date_range
-                    mask_date = dataset["Fecha"].between(
-                        pd.to_datetime(start_date), pd.to_datetime(end_date)
-                    )
-                    df_filtered = dataset[mask_date].copy()
+                    # Botón para ejecutar la simulación
+                    if st.button("Ejecutar Simulación", type="primary", use_container_width=True, key="run_simulation_button"):
+                        start_date, end_date = date_range
+                        mask_date = dataset["Fecha"].between(
+                            pd.to_datetime(start_date), pd.to_datetime(end_date)
+                        )
+                        df_filtered = dataset[mask_date].copy()
 
-                    # --- Filtro opcional por equipos involucrados.
-                    if equipo_filter:
-                        df_filtered = df_filtered[
-                            df_filtered["Equipo_local"].isin(equipo_filter)
-                            | df_filtered["Equipo_visitante"].isin(equipo_filter)
-                        ]
+                        # --- Filtro opcional por equipos involucrados.
+                        if equipo_filter:
+                            df_filtered = df_filtered[
+                                df_filtered["Equipo_local"].isin(equipo_filter)
+                                | df_filtered["Equipo_visitante"].isin(equipo_filter)
+                            ]
 
-                    df_filtered = df_filtered.reset_index(drop=True)
+                        df_filtered = df_filtered.reset_index(drop=True)
 
-                    if df_filtered.empty:
-                        st.warning("No hay partidos que cumplan los filtros seleccionados.")
-                    else:
-                        # --- Aviso de partidos descartados por ausencia de features compatibles.
-                        if not unmatched.empty:
-                            with st.expander("Partidos sin features asociados"):
-                                st.write(
-                                    "Los siguientes partidos no pudieron enlazarse con las "
-                                    "features disponibles y se excluyeron de la simulación."
+                        if df_filtered.empty:
+                            st.warning("No hay partidos que cumplan los filtros seleccionados.")
+                        else:
+                            # Guardar resultados en session_state para que persistan después del botón
+                            st.session_state.sim_df_filtered = df_filtered
+                            st.session_state.sim_start_date = start_date
+                            st.session_state.sim_end_date = end_date
+                            st.session_state.sim_unmatched = unmatched
+                            st.rerun()
+                    
+                    # Mostrar resultados de la simulación si existen en session_state
+                    if 'sim_df_filtered' in st.session_state and not st.session_state.sim_df_filtered.empty:
+                        df_filtered = st.session_state.sim_df_filtered
+                        start_date = st.session_state.sim_start_date
+                        end_date = st.session_state.sim_end_date
+                        unmatched = st.session_state.sim_unmatched
+                        
+                        if df_filtered.empty:
+                            st.warning("No hay partidos que cumplan los filtros seleccionados.")
+                        else:
+                            # --- Aviso de partidos descartados por ausencia de features compatibles.
+                            if not unmatched.empty:
+                                with st.expander("Partidos sin features asociados"):
+                                    st.write(
+                                        "Los siguientes partidos no pudieron enlazarse con las "
+                                        "features disponibles y se excluyeron de la simulación."
+                                    )
+                                    st.dataframe(
+                                        unmatched[
+                                            ["Fecha", "Equipo_local", "Equipo_visitante", "marcador"]
+                                        ],
+                                        use_container_width=True,
+                                    )
+
+                            st.markdown(f"**Simulando {len(df_filtered)} partidos entre "
+                                      f"{pd.to_datetime(start_date).date()} y {pd.to_datetime(end_date).date()}**")
+
+                            # --- Almacenamos las curvas de saldo de cada modelo para graficar luego.
+                            all_results_for_plot: List[pd.DataFrame] = []
+
+                            # --- Simulación y resumen por cada modelo seleccionado.
+                            # Aquí hacemos predict, calculamos ganancias y mostramos resultados.
+                            for model_name in model_selection:
+                                st.markdown(f"### {model_name}")
+                                model = models[model_name]
+                                results, summary = simulate_betting(
+                                    model=model,
+                                    dataset=df_filtered,
+                                    feature_columns=feature_columns,
+                                    stake=stake,
+                                    initial_balance=initial_balance,
                                 )
+
+                                # --- Cuatro métricas directas para entender de un vistazo el desempeño.
+                                col1, col2, col3, col4 = st.columns(4)
+                                col1.metric("Saldo final", format_currency(summary["final_balance"]))
+                                col2.metric("Ganancia neta", format_currency(summary["profit"]))
+                                accuracy = (
+                                    f"{summary['accuracy']*100:.1f}%"
+                                    if not np.isnan(summary["accuracy"])
+                                    else "N/A"
+                                )
+                                col3.metric("Acierto", f"{summary['aciertos']} / {summary['total_bets']}")
+                                col4.metric("Efectividad", accuracy)
+
+                                roi_value = summary["roi"]
+                                if np.isnan(roi_value):
+                                    st.caption("ROI sobre saldo inicial: N/A")
+                                else:
+                                    roi_percent = f"{roi_value*100:.1f}%"
+                                    if roi_value > 0:
+                                        roi_color = "#2ECC71"
+                                    elif roi_value < 0:
+                                        roi_color = "#E74C3C"
+                                    else:
+                                        roi_color = "#6C757D"
+                                    # Mostramos el resultado en color verde si ganamos, rojo si perdimos.
+                                    st.markdown(
+                                        f"<p style='color:{roi_color}; font-size:0.9rem; margin-top:0;'>"
+                                        f"ROI sobre saldo inicial: {roi_percent}"
+                                        "</p>",
+                                        unsafe_allow_html=True,
+                                    )
+
+                                if results.empty:
+                                    st.info("No se generaron resultados para este modelo.")
+                                    continue
+
+                                plot_section = results[["Fecha", "Balance"]].copy()
+                                plot_section["Modelo"] = model_name
+                                all_results_for_plot.append(plot_section)
+
+                                # --- Tabla con detalle de resultados, cuotas y saldo acumulado.
+                                display_cols = [
+                                    "Fecha",
+                                    "Equipo_local",
+                                    "Equipo_visitante",
+                                    "marcador",
+                                    "Resultado_real",
+                                    "Prediccion",
+                                    "Resultado_match",
+                                    "Cuota_usada",
+                                    "Ganancia",
+                                    "Balance",
+                                ]
                                 st.dataframe(
-                                    unmatched[
-                                        ["Fecha", "Equipo_local", "Equipo_visitante", "marcador"]
-                                    ],
+                                    results[display_cols],
                                     use_container_width=True,
                                 )
-
-                        st.markdown(f"**Simulando {len(df_filtered)} partidos entre "
-                                  f"{pd.to_datetime(start_date).date()} y {pd.to_datetime(end_date).date()}**")
-
-                        # --- Almacenamos las curvas de saldo de cada modelo para graficar luego.
-                        all_results_for_plot: List[pd.DataFrame] = []
-
-                        # --- Simulación y resumen por cada modelo seleccionado.
-                        # Aquí hacemos predict, calculamos ganancias y mostramos resultados.
-                        for model_name in model_selection:
-                            st.markdown(f"### {model_name}")
-                            model = models[model_name]
-                            results, summary = simulate_betting(
-                                model=model,
-                                dataset=df_filtered,
-                                feature_columns=feature_columns,
-                                stake=stake,
-                                initial_balance=initial_balance,
-                            )
-
-                            # --- Cuatro métricas directas para entender de un vistazo el desempeño.
-                            col1, col2, col3, col4 = st.columns(4)
-                            col1.metric("Saldo final", format_currency(summary["final_balance"]))
-                            col2.metric("Ganancia neta", format_currency(summary["profit"]))
-                            accuracy = (
-                                f"{summary['accuracy']*100:.1f}%"
-                                if not np.isnan(summary["accuracy"])
-                                else "N/A"
-                            )
-                            col3.metric("Acierto", f"{summary['aciertos']} / {summary['total_bets']}")
-                            col4.metric("Efectividad", accuracy)
-
-                            roi_value = summary["roi"]
-                            if np.isnan(roi_value):
-                                st.caption("ROI sobre saldo inicial: N/A")
-                            else:
-                                roi_percent = f"{roi_value*100:.1f}%"
-                                if roi_value > 0:
-                                    roi_color = "#2ECC71"
-                                elif roi_value < 0:
-                                    roi_color = "#E74C3C"
-                                else:
-                                    roi_color = "#6C757D"
-                                # Mostramos el resultado en color verde si ganamos, rojo si perdimos.
-                                st.markdown(
-                                    f"<p style='color:{roi_color}; font-size:0.9rem; margin-top:0;'>"
-                                    f"ROI sobre saldo inicial: {roi_percent}"
-                                    "</p>",
-                                    unsafe_allow_html=True,
+                                csv_data = results.to_csv(index=False).encode("utf-8")
+                                st.download_button(
+                                    label="Descargar detalle (.csv)",
+                                    data=csv_data,
+                                    file_name=f"simulacion_{model_name.replace(' ', '_').lower()}.csv",
+                                    mime="text/csv",
+                                    key=f"download_{model_name}",
                                 )
 
-                            if results.empty:
-                                st.info("No se generaron resultados para este modelo.")
-                                continue
+                            # --- Visualización comparativa del saldo para los modelos evaluados.
+                            if all_results_for_plot:
+                                plot_df = pd.concat(all_results_for_plot, ignore_index=True)
+                                plot_df["Fecha"] = pd.to_datetime(plot_df["Fecha"])
 
-                            plot_section = results[["Fecha", "Balance"]].copy()
-                            plot_section["Modelo"] = model_name
-                            all_results_for_plot.append(plot_section)
-
-                            # --- Tabla con detalle de resultados, cuotas y saldo acumulado.
-                            display_cols = [
-                                "Fecha",
-                                "Equipo_local",
-                                "Equipo_visitante",
-                                "marcador",
-                                "Resultado_real",
-                                "Prediccion",
-                                "Resultado_match",
-                                "Cuota_usada",
-                                "Ganancia",
-                                "Balance",
-                            ]
-                            st.dataframe(
-                                results[display_cols],
-                                use_container_width=True,
-                            )
-                            csv_data = results.to_csv(index=False).encode("utf-8")
-                            st.download_button(
-                                label="Descargar detalle (.csv)",
-                                data=csv_data,
-                                file_name=f"simulacion_{model_name.replace(' ', '_').lower()}.csv",
-                                mime="text/csv",
-                                key=f"download_{model_name}",
-                            )
-
-                        # --- Visualización comparativa del saldo para los modelos evaluados.
-                        if all_results_for_plot:
-                            plot_df = pd.concat(all_results_for_plot, ignore_index=True)
-                            plot_df["Fecha"] = pd.to_datetime(plot_df["Fecha"])
-
-                            st.subheader("Evolución comparativa del saldo")
-                            chart = (
-                                alt.Chart(plot_df)
-                                .mark_line()
-                                .encode(
-                                    x=alt.X("Fecha:T", title="Fecha"),
-                                    y=alt.Y("Balance:Q", title="Saldo acumulado"),
-                                    color=alt.Color("Modelo:N", title="Modelo"),
-                                    tooltip=[
-                                        alt.Tooltip("Modelo:N", title="Modelo"),
-                                        alt.Tooltip("Fecha:T", title="Fecha"),
-                                        alt.Tooltip("Balance:Q", title="Saldo"),
-                                    ],
+                                st.subheader("Evolución comparativa del saldo")
+                                chart = (
+                                    alt.Chart(plot_df)
+                                    .mark_line()
+                                    .encode(
+                                        x=alt.X("Fecha:T", title="Fecha"),
+                                        y=alt.Y("Balance:Q", title="Saldo acumulado"),
+                                        color=alt.Color("Modelo:N", title="Modelo"),
+                                        tooltip=[
+                                            alt.Tooltip("Modelo:N", title="Modelo"),
+                                            alt.Tooltip("Fecha:T", title="Fecha"),
+                                            alt.Tooltip("Balance:Q", title="Saldo"),
+                                        ],
+                                    )
                                 )
-                            )
-                            st.altair_chart(chart, use_container_width=True)
+                                st.altair_chart(chart, use_container_width=True)
     except FileNotFoundError as e:
         st.warning(f"⚠️ No se encontró el archivo de cuotas 2024. El simulador requiere el archivo 'cuotas_2024.csv' en el directorio del proyecto.")
     except Exception as e:
