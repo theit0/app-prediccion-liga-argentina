@@ -1114,18 +1114,18 @@ with col_left:
         
         with col_logo_local:
             if equipo_local_actual in team_urls:
-                st.image(team_urls[equipo_local_actual], width=120)
+                st.image(team_urls[equipo_local_actual], width=100)
         
         with col_vs:
             st.markdown("""
                 <div style="display: flex; align-items: center; justify-content: center; height: 100%;">
-                    <h2 style="margin: 0; color: #666;">vs.</h2>
+                    <h2 style="margin-top: 40px; color: #666;">VS</h2>
                 </div>
             """, unsafe_allow_html=True)
         
         with col_logo_visitante:
             if equipo_visitante_actual in team_urls:
-                st.image(team_urls[equipo_visitante_actual], width=120)
+                st.image(team_urls[equipo_visitante_actual], width=100)
         
         # Selectores de equipos (debajo de los logos)
         col1, col2, col3 = st.columns([2.5, 0.5, 2.5])
