@@ -494,6 +494,50 @@ def format_currency(value: float) -> str:
 
     return f"${value:,.2f}"
 
+# --- Función helper para mostrar estadísticas normalizadas con barras de progreso y colores
+def mostrar_estadistica_normalizada(st, label: str, valor: float, es_inverso: bool = False):
+    """Muestra una estadística normalizada con barra de progreso y colores según umbrales.
+    
+    Args:
+        st: Instancia de streamlit
+        label: Etiqueta de la estadística
+        valor: Valor normalizado (0-1)
+        es_inverso: Si True, valores más bajos son mejores (ej: goles recibidos)
+    """
+    # Convertir valor a porcentaje (0-100)
+    porcentaje = valor * 100
+    
+    # Determinar color según umbrales
+    if es_inverso:
+        # Para métricas inversas (goles recibidos): más bajo es mejor
+        if valor <= 0.4:
+            color = "#28a745"  # Verde
+        elif valor <= 0.6:
+            color = "#ffc107"  # Amarillo
+        else:
+            color = "#dc3545"  # Rojo
+    else:
+        # Para métricas normales (victorias, goles marcados, etc.): más alto es mejor
+        if valor >= 0.6:
+            color = "#28a745"  # Verde
+        elif valor >= 0.4:
+            color = "#ffc107"  # Amarillo
+        else:
+            color = "#dc3545"  # Rojo
+    
+    # Mostrar el valor y la barra de progreso con color
+    st.write(f"**{label}:** {valor:.3f} ({porcentaje:.1f}%)")
+    st.markdown(
+        f"""
+        <div style="background-color: #e0e0e0; border-radius: 10px; padding: 3px; margin-bottom: 15px; height: 25px;">
+            <div style="background-color: {color}; width: {porcentaje}%; height: 19px; border-radius: 7px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 11px; transition: width 0.3s ease;">
+                {porcentaje:.1f}%
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
 model = load_model()
 equipos = load_auxiliary_data()
 team_urls = load_team_urls()
@@ -771,30 +815,48 @@ with col_left:
                     col_info1, col_info2 = st.columns(2)
                     
                     with col_info1:
+                        # Mostrar imagen del equipo local
+                        if equipo_local in team_urls:
+                            st.image(team_urls[equipo_local], width=60)
                         st.subheader("Equipo Local")
-                        st.write(f"**Equipo:** {equipo_local}")
+                        # Obtener información del partido usado para el equipo local
+                        equipo_local_partido = partido_local.get('Equipo_local', '')
+                        equipo_visitante_partido_local = partido_local.get('Equipo_visitante', '')
                         if fecha_partido_local:
+                            st.write(f"**Equipo:** {equipo_local} vs. {equipo_visitante_partido_local}")
                             st.write(f"**Datos del partido:** {fecha_partido_local.strftime('%d/%m/%Y')}")
+                        else:
+                            st.write(f"**Equipo:** {equipo_local}")
                         st.write(f"**Partidos jugados:** {default_values['Partidos_jugados_local_previos']}")
                         st.write(f"**Forma últimos 5:** {default_values['Forma_local_ultimos5']} ({default_values['Forma_local_puntos_ultimos5']} pts)")
-                        st.write(f"**Victorias en casa (norm):** {default_values['Victorias_local_en_casa_tasa_normalizada']:.3f}")
-                        st.write(f"**Goles marcados (norm):** {default_values['Promedio_Goles_marcados_totales_local_normalizado']:.3f}")
-                        st.write(f"**Goles recibidos (norm):** {default_values['Promedio_Goles_recibidos_totales_local_normalizado']:.3f}")
-                        st.write(f"**Valla invicta (norm):** {default_values['Valla_invicta_local_tasa_normalizada']:.3f}")
-                        st.write(f"**Valor equipo (norm):** {default_values['local_team_value_normalized']:.3f}")
+                        st.markdown("---")
+                        mostrar_estadistica_normalizada(st, "Victorias en casa (norm)", default_values['Victorias_local_en_casa_tasa_normalizada'])
+                        mostrar_estadistica_normalizada(st, "Goles marcados (norm)", default_values['Promedio_Goles_marcados_totales_local_normalizado'])
+                        mostrar_estadistica_normalizada(st, "Goles recibidos (norm)", default_values['Promedio_Goles_recibidos_totales_local_normalizado'], es_inverso=True)
+                        mostrar_estadistica_normalizada(st, "Valla invicta (norm)", default_values['Valla_invicta_local_tasa_normalizada'])
+                        mostrar_estadistica_normalizada(st, "Valor equipo (norm)", default_values['local_team_value_normalized'])
                     
                     with col_info2:
+                        # Mostrar imagen del equipo visitante
+                        if equipo_visitante in team_urls:
+                            st.image(team_urls[equipo_visitante], width=60)
                         st.subheader("Equipo Visitante")
-                        st.write(f"**Equipo:** {equipo_visitante}")
+                        # Obtener información del partido usado para el equipo visitante
+                        equipo_local_partido_visitante = partido_visitante.get('Equipo_local', '')
+                        equipo_visitante_partido = partido_visitante.get('Equipo_visitante', '')
                         if fecha_partido_visitante:
+                            st.write(f"**Equipo:** {equipo_visitante} vs. {equipo_local_partido_visitante}")
                             st.write(f"**Datos del partido:** {fecha_partido_visitante.strftime('%d/%m/%Y')}")
+                        else:
+                            st.write(f"**Equipo:** {equipo_visitante}")
                         st.write(f"**Partidos jugados:** {default_values['Partidos_jugados_visitante_previos']}")
                         st.write(f"**Forma últimos 5:** {default_values['Forma_visitante_ultimos5']} ({default_values['Forma_visitante_puntos_ultimos5']} pts)")
-                        st.write(f"**Victorias fuera (norm):** {default_values['Victorias_visitante_fuera_tasa_normalizada']:.3f}")
-                        st.write(f"**Goles marcados (norm):** {default_values['Promedio_Goles_marcados_totales_visitante_normalizado']:.3f}")
-                        st.write(f"**Goles recibidos (norm):** {default_values['Promedio_Goles_recibidos_totales_visitante_normalizado']:.3f}")
-                        st.write(f"**Valla invicta (norm):** {default_values['Valla_invicta_visitante_tasa_normalizada']:.3f}")
-                        st.write(f"**Valor equipo (norm):** {default_values['visitante_team_value_normalized']:.3f}")
+                        st.markdown("---")
+                        mostrar_estadistica_normalizada(st, "Victorias fuera (norm)", default_values['Victorias_visitante_fuera_tasa_normalizada'])
+                        mostrar_estadistica_normalizada(st, "Goles marcados (norm)", default_values['Promedio_Goles_marcados_totales_visitante_normalizado'])
+                        mostrar_estadistica_normalizada(st, "Goles recibidos (norm)", default_values['Promedio_Goles_recibidos_totales_visitante_normalizado'], es_inverso=True)
+                        mostrar_estadistica_normalizada(st, "Valla invicta (norm)", default_values['Valla_invicta_visitante_tasa_normalizada'])
+                        mostrar_estadistica_normalizada(st, "Valor equipo (norm)", default_values['visitante_team_value_normalized'])
                 
             except Exception as e:
                 st.error(f"Error al hacer la predicción: {str(e)}")
