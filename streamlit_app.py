@@ -707,8 +707,8 @@ def crear_grafico_radar_equipos(df: pd.DataFrame):
 
         # Combinar todo
         radar_chart = (circles + axes + labels + radar1 + radar2).properties(
-            width=600,
-            height=600,
+            width=300,
+            height=1000,
             title={
                 'text': 'Comparación de Equipos',
             }
@@ -762,7 +762,7 @@ def crear_grafico_comparacion_forma(df: pd.DataFrame, equipo1: str, equipo2: str
 
         if data_eq1.empty or data_eq2.empty:
             st.error("❌ No se pueden mostrar datos para la comparación")
-            return None
+            return None, None, None, None, None
 
         # Crear figura
         fig, axes = plt.subplots(3, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [2, 1, 1]})
@@ -1027,15 +1027,15 @@ with col_logo:
 with col_titulo:
     st.title("Predicción de Resultados - Liga Argentina")
 
-# Dividir pantalla en dos columnas: izquierda (predicción) y derecha (simulador)
-col_left, col_right = st.columns([1, 1])
+# Contenedor principal para la navegación por tabs
+col_left = st.container()
 
 # ============================================
 # COLUMNA IZQUIERDA: PREDICCIÓN DE PARTIDOS
 # ============================================
 with col_left:
     # Crear tabs
-    tab1, tab2 = st.tabs(["Predecir", "Análisis"])
+    tab1, tab2, tab3 = st.tabs(["Predecir", "Análisis", "Simulación"])
     
     with tab1:
         st.subheader("Predicción de Partidos")
@@ -1457,9 +1457,9 @@ with col_left:
                 st.info("No se pudo generar el gráfico de valor vs rendimiento. Verifica que los datos estén disponibles.")
 
 # ============================================
-# COLUMNA DERECHA: SIMULADOR DE APUESTAS
+# TAB: SIMULADOR DE APUESTAS
 # ============================================
-with col_right:
+with tab3:
     st.subheader("Simulación de Apuestas 2024")
     st.markdown("Compara el rendimiento de diferentes modelos usando cuotas reales de 2024")
     
@@ -1662,81 +1662,88 @@ with col_right:
 
                             # --- Simulación y resumen por cada modelo seleccionado.
                             # Aquí hacemos predict, calculamos ganancias y mostramos resultados.
-                            for model_name in model_selection:
-                                st.markdown(f"### {model_name}")
-                                model = models[model_name]
-                                results, summary = simulate_betting(
-                                    model=model,
-                                    dataset=df_filtered,
-                                    feature_columns=feature_columns,
-                                    stake=stake,
-                                    initial_balance=initial_balance,
-                                )
+                            for i in range(0, len(model_selection), 2):
+                                modelos_en_fila = model_selection[i : i + 2]
+                                fila_columnas = st.columns(len(modelos_en_fila))
 
-                                # --- Cuatro métricas directas para entender de un vistazo el desempeño.
-                                col1, col2, col3, col4 = st.columns(4)
-                                col1.metric("Saldo final", format_currency(summary["final_balance"]))
-                                col2.metric("Ganancia neta", format_currency(summary["profit"]))
-                                accuracy = (
-                                    f"{summary['accuracy']*100:.1f}%"
-                                    if not np.isnan(summary["accuracy"])
-                                    else "N/A"
-                                )
-                                col3.metric("Acierto", f"{summary['aciertos']} / {summary['total_bets']}")
-                                col4.metric("Efectividad", accuracy)
+                                for columna, model_name in zip(fila_columnas, modelos_en_fila):
+                                    with columna:
+                                        st.markdown(f"#### {model_name}")
+                                        model = models[model_name]
+                                        results, summary = simulate_betting(
+                                            model=model,
+                                            dataset=df_filtered,
+                                            feature_columns=feature_columns,
+                                            stake=stake,
+                                            initial_balance=initial_balance,
+                                        )
 
-                                roi_value = summary["roi"]
-                                if np.isnan(roi_value):
-                                    st.caption("ROI sobre saldo inicial: N/A")
-                                else:
-                                    roi_percent = f"{roi_value*100:.1f}%"
-                                    if roi_value > 0:
-                                        roi_color = "#2ECC71"
-                                    elif roi_value < 0:
-                                        roi_color = "#E74C3C"
-                                    else:
-                                        roi_color = "#6C757D"
-                                    # Mostramos el resultado en color verde si ganamos, rojo si perdimos.
-                                    st.markdown(
-                                        f"<p style='color:{roi_color}; font-size:0.9rem; margin-top:0;'>"
-                                        f"ROI sobre saldo inicial: {roi_percent}"
-                                        "</p>",
-                                        unsafe_allow_html=True,
-                                    )
+                                        # --- Cuatro métricas directas para entender de un vistazo el desempeño.
+                                        metric_row1_col1, metric_row1_col2 = st.columns(2)
+                                        metric_row1_col1.metric("Saldo final", format_currency(summary["final_balance"]))
+                                        metric_row1_col2.metric("Ganancia neta", format_currency(summary["profit"]))
 
-                                if results.empty:
-                                    st.info("No se generaron resultados para este modelo.")
-                                    continue
+                                        metric_row2_col1, metric_row2_col2 = st.columns(2)
+                                        accuracy = (
+                                            f"{summary['accuracy']*100:.1f}%"
+                                            if not np.isnan(summary["accuracy"])
+                                            else "N/A"
+                                        )
+                                        metric_row2_col1.metric("Acierto", f"{summary['aciertos']} / {summary['total_bets']}")
+                                        metric_row2_col2.metric("Efectividad", accuracy)
 
-                                plot_section = results[["Fecha", "Balance"]].copy()
-                                plot_section["Modelo"] = model_name
-                                all_results_for_plot.append(plot_section)
+                                        roi_value = summary["roi"]
+                                        if np.isnan(roi_value):
+                                            st.caption("ROI sobre saldo inicial: N/A")
+                                        else:
+                                            roi_percent = f"{roi_value*100:.1f}%"
+                                            if roi_value > 0:
+                                                roi_color = "#2ECC71"
+                                            elif roi_value < 0:
+                                                roi_color = "#E74C3C"
+                                            else:
+                                                roi_color = "#6C757D"
+                                            # Mostramos el resultado en color verde si ganamos, rojo si perdimos.
+                                            st.markdown(
+                                                f"<p style='color:{roi_color}; font-size:0.9rem; margin-top:0;'>"
+                                                f"ROI sobre saldo inicial: {roi_percent}"
+                                                "</p>",
+                                                unsafe_allow_html=True,
+                                            )
 
-                                # --- Tabla con detalle de resultados, cuotas y saldo acumulado.
-                                display_cols = [
-                                    "Fecha",
-                                    "Equipo_local",
-                                    "Equipo_visitante",
-                                    "marcador",
-                                    "Resultado_real",
-                                    "Prediccion",
-                                    "Resultado_match",
-                                    "Cuota_usada",
-                                    "Ganancia",
-                                    "Balance",
-                                ]
-                                st.dataframe(
-                                    results[display_cols],
-                                    use_container_width=True,
-                                )
-                                csv_data = results.to_csv(index=False).encode("utf-8")
-                                st.download_button(
-                                    label="Descargar detalle (.csv)",
-                                    data=csv_data,
-                                    file_name=f"simulacion_{model_name.replace(' ', '_').lower()}.csv",
-                                    mime="text/csv",
-                                    key=f"download_{model_name}",
-                                )
+                                        if results.empty:
+                                            st.info("No se generaron resultados para este modelo.")
+                                            continue
+
+                                        plot_section = results[["Fecha", "Balance"]].copy()
+                                        plot_section["Modelo"] = model_name
+                                        all_results_for_plot.append(plot_section)
+
+                                        # --- Tabla con detalle de resultados, cuotas y saldo acumulado.
+                                        display_cols = [
+                                            "Fecha",
+                                            "Equipo_local",
+                                            "Equipo_visitante",
+                                            "marcador",
+                                            "Resultado_real",
+                                            "Prediccion",
+                                            "Resultado_match",
+                                            "Cuota_usada",
+                                            "Ganancia",
+                                            "Balance",
+                                        ]
+                                        st.dataframe(
+                                            results[display_cols],
+                                            use_container_width=True,
+                                        )
+                                        csv_data = results.to_csv(index=False).encode("utf-8")
+                                        st.download_button(
+                                            label="Descargar detalle (.csv)",
+                                            data=csv_data,
+                                            file_name=f"simulacion_{model_name.replace(' ', '_').lower()}.csv",
+                                            mime="text/csv",
+                                            key=f"download_{model_name}",
+                                        )
 
                             # --- Visualización comparativa del saldo para los modelos evaluados.
                             if all_results_for_plot:
