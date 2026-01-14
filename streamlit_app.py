@@ -141,10 +141,46 @@ if not hasattr(np_random_pickle, "__original_generator_ctor"):
     np_random_pickle.__original_generator_ctor = np_random_pickle.__generator_ctor
     np_random_pickle.__generator_ctor = _compatible_generator_ctor
 
+
+# --- Ajustes de compatibilidad para SimpleImputer entre versiones de scikit-learn.
+def _patch_simple_imputer(imputer):
+    """Garantiza que los atributos internos existan al cargar pickles antiguos."""
+
+    if not hasattr(imputer, "_fit_dtype"):
+        # Mejor conjetura: usar el dtype observado en statistics_ o fill_value.
+        if getattr(imputer, "statistics_", None) is not None:
+            imputer._fit_dtype = np.asarray(imputer.statistics_).dtype
+        elif imputer.fill_value is not None:
+            imputer._fit_dtype = np.asarray([imputer.fill_value]).dtype
+        else:
+            imputer._fit_dtype = np.dtype(float)
+
+    if not hasattr(imputer, "_fill_dtype"):
+        imputer._fill_dtype = imputer._fit_dtype
+
+
+def _ensure_imputer_compat(obj):
+    """Recorre pipelines y column transformers aplicando el parche a cada SimpleImputer."""
+
+    from sklearn.compose import ColumnTransformer
+    from sklearn.impute import SimpleImputer
+    from sklearn.pipeline import Pipeline
+
+    if isinstance(obj, SimpleImputer):
+        _patch_simple_imputer(obj)
+    elif isinstance(obj, Pipeline):
+        for _, step in obj.steps:
+            _ensure_imputer_compat(step)
+    elif isinstance(obj, ColumnTransformer):
+        for _, transformer, _ in obj.transformers:
+            _ensure_imputer_compat(transformer)
+
+
 @st.cache_resource
 def load_model():
     try:
         model = joblib.load("model.pkl")
+        _ensure_imputer_compat(model)
         return model
     except FileNotFoundError:
         st.error("No se encontró el archivo del modelo (model.pkl).")
@@ -402,7 +438,9 @@ def load_models(model_files: Dict[str, str]) -> Dict[str, object]:
     for name, filename in model_files.items():
         model_path = DATA_DIR / filename
         try:
-            models[name] = joblib.load(model_path)
+            loaded_model = joblib.load(model_path)
+            _ensure_imputer_compat(loaded_model)
+            models[name] = loaded_model
         except FileNotFoundError:
             # Si un modelo no existe, lo omitimos silenciosamente
             continue
